@@ -1,0 +1,43 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: main-ingress
+  namespace: default  
+  annotations:
+
+    # Rewrite: /api/users → /users on backend
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+
+    # Optional but very useful on LKE/NodeBalancer
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"   
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"   
+
+spec:
+  ingressClassName: nginx   # ← This is the 2024+ recommended way
+
+  # Optional: add tls section later with cert-manager
+  # tls:
+  # - hosts:
+  #   - learndevops.site
+  #   secretName: learndevops-tls
+
+  rules:
+  - host: learndevops.site
+    http:
+      paths:
+        # 1. API routes — strip /api prefix
+        - path: /api(/|$)(.*)
+          pathType: ImplementationSpecific
+          backend:
+            service:
+              name: api-service
+              port:
+                number: 80  
+
+        - path: /
+          pathType: Prefix  
+          backend:
+            service:
+              name: frontend-service
+              port:
+                number: 80  
