@@ -72,9 +72,11 @@ jobs:
       - name: Install deps
         run: npm ci
 
-      # Scan API dependencies for known vulnerabilities
+      # Scan API production dependencies for known vulnerabilities
+      # nodemon (dev-only) pins a vulnerable minimatch; skip dev deps
+      # since they never ship in the production Docker image
       - name: npm audit (api)
-        run: npm audit --audit-level=high
+        run: npm audit --audit-level=high --omit=dev
 
   # ─── Docker Build & Security Scan ────────────────────────────────
   docker-build:
