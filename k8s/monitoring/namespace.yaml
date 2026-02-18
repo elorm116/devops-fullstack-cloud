@@ -1,0 +1,9 @@
+# Monitoring Namespace
+# All observability components live here to keep them isolated from app workloads
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    purpose: observability

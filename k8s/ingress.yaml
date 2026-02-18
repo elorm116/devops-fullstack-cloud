@@ -12,14 +12,19 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"   
     nginx.ingress.kubernetes.io/proxy-read-timeout: "60"   
 
+    # cert-manager: auto-provision TLS certificate from Let's Encrypt
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+    # Force HTTPS redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
 spec:
   ingressClassName: nginx   # ← This is the 2024+ recommended way
 
-  # Optional: add tls section later with cert-manager
-  # tls:
-  # - hosts:
-  #   - learndevops.site
-  #   secretName: learndevops-tls
+  tls:
+  - hosts:
+    - learndevops.site
+    secretName: learndevops-tls   # cert-manager stores the cert here automatically
 
   rules:
   - host: learndevops.site

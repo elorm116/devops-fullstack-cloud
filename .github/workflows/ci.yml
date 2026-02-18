@@ -2,16 +2,18 @@ name: CI
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: ["main"]
     paths:
       - 'api/**'
       - 'myblog/**'
+      - 'k8s/**'
       - '.github/workflows/**'
   pull_request:
-    branches: ["main", "master"]
+    branches: ["main"]
     paths:
       - 'api/**'
       - 'myblog/**'
+      - 'k8s/**'
       - '.github/workflows/**'
 
 jobs:
@@ -201,3 +203,51 @@ jobs:
           else
             echo "### ❌ Some checks failed. Review logs above." >> $GITHUB_STEP_SUMMARY
           fi
+
+  # ─── CD: Deploy to Kubernetes ─────────────────────────────────────
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [docker-build]
+    runs-on: ubuntu-latest
+    name: Deploy to LKE
+    environment: production  # ← Requires GitHub environment approval (optional)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Verify cluster access
+        run: kubectl cluster-info && kubectl get nodes
+
+      # Update images to the exact SHA tag that was just built
+      - name: Deploy API
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          kubectl set image deployment/api-deployment \
+            api-container=ghcr.io/${{ github.repository }}/api:sha-${SHORT_SHA}
+          kubectl rollout status deployment/api-deployment --timeout=120s
+
+      - name: Deploy Frontend
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          kubectl set image deployment/frontend-deployment \
+            frontend-container=ghcr.io/${{ github.repository }}/frontend:sha-${SHORT_SHA}
+          kubectl rollout status deployment/frontend-deployment --timeout=120s
+
+      - name: Verify deployment
+        run: |
+          echo "## 🚀 Deployment Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -o wide >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Services" >> $GITHUB_STEP_SUMMARY
+          kubectl get svc >> $GITHUB_STEP_SUMMARY
