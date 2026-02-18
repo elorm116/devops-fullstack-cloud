@@ -1,0 +1,86 @@
+# Helm Values for kube-prometheus-stack
+# Chart: https://prometheus-community.github.io/helm-charts
+#
+# Install with:
+#   helm upgrade --install monitoring kube-prometheus-stack \
+#     --repo https://prometheus-community.github.io/helm-charts \
+#     --namespace monitoring --create-namespace \
+#     -f helm/monitoring-values.yaml
+#
+# This replaces our manual Prometheus + Grafana manifests with
+# a production-grade stack including 30+ pre-built dashboards,
+# alertmanager, node-exporter, and kube-state-metrics.
+
+# ─── Prometheus ──────────────────────────────────────────────────
+prometheus:
+  prometheusSpec:
+    # Retain metrics for 7 days
+    retention: 7d
+
+    # Resource limits — tuned for a 3-node test cluster
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+    # Scrape ALL ServiceMonitors across all namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+    # Storage — use emptyDir for testing, PVC for production
+    storageSpec: {}
+
+# ─── Grafana ─────────────────────────────────────────────────────
+grafana:
+  # Admin credentials (change in production or use a K8s secret)
+  adminUser: admin
+  adminPassword: admin
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  # Grafana comes pre-loaded with dashboards for:
+  # - Kubernetes cluster health
+  # - Node resource usage
+  # - Pod/container metrics
+  # - CoreDNS, etcd, API server, etc.
+
+# ─── Alertmanager ────────────────────────────────────────────────
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+# ─── Node Exporter (hardware/OS metrics from each node) ─────────
+nodeExporter:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# ─── Kube State Metrics (K8s object metrics) ────────────────────
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi

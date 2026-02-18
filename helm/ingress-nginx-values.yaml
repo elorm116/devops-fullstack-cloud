@@ -1,0 +1,39 @@
+# Helm Values for ingress-nginx
+# Chart: https://kubernetes.github.io/ingress-nginx
+#
+# These override the chart defaults for our Linode LKE setup.
+# Install with:
+#   helm upgrade --install ingress-nginx ingress-nginx \
+#     --repo https://kubernetes.github.io/ingress-nginx \
+#     --namespace ingress-nginx --create-namespace \
+#     -f helm/ingress-nginx-values.yaml
+
+controller:
+  # Use the Deployment strategy (default), good for LKE
+  replicaCount: 2
+
+  # Resource limits — keep it light for a small cluster
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+  # Enable metrics for Prometheus scraping
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true   # kube-prometheus-stack will auto-discover this
+
+  # Linode NodeBalancer annotations
+  service:
+    annotations:
+      service.beta.kubernetes.io/linode-loadbalancer-default-protocol: "tcp"
+      # NOTE: proxy-protocol disabled to allow cert-manager self-checks.
+      # To enable real client IPs, uncomment these and set config.use-proxy-protocol: "true"
+      # service.beta.kubernetes.io/linode-loadbalancer-proxy-protocol: "v2"
+
+  config:
+    use-proxy-protocol: "false"

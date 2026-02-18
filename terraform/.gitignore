@@ -4,3 +4,6 @@
 .terraform/
 *.tfvars
 *.tfvars.json
+
+# Kubeconfig (contains cluster credentials)
+lke-config.yaml

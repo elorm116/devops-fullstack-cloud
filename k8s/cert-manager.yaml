@@ -32,6 +32,11 @@ spec:
     - http01:
         ingress:
           class: nginx
+          # Prevent 308 redirect on solver ingress (ingress-nginx global ssl-redirect)
+          ingressTemplate:
+            metadata:
+              annotations:
+                nginx.ingress.kubernetes.io/ssl-redirect: "false"
 ---
 # Optional: staging issuer for testing (won't hit rate limits)
 apiVersion: cert-manager.io/v1
@@ -48,3 +53,7 @@ spec:
     - http01:
         ingress:
           class: nginx
+          ingressTemplate:
+            metadata:
+              annotations:
+                nginx.ingress.kubernetes.io/ssl-redirect: "false"
