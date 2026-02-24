@@ -37,6 +37,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+
       - name: Determine SHA
         id: sha
         shell: bash
@@ -80,16 +85,20 @@ jobs:
           API_IMAGE="ghcr.io/${REPO}/api:sha-${{ steps.sha.outputs.short }}"
           FRONTEND_IMAGE="ghcr.io/${REPO}/frontend:sha-${{ steps.sha.outputs.short }}"
 
+          GHCR_TOKEN_B64="$(printf %s "$GHCR_TOKEN" | base64 -w0)"
+
           ssh -i ~/.ssh/id_ed25519 \
             "$SERVER_USER@$SERVER_HOST" \
-            "GHCR_TOKEN='$GHCR_TOKEN' API_IMAGE='$API_IMAGE' FRONTEND_IMAGE='$FRONTEND_IMAGE' SERVER_DIR='$SERVER_DIR' FRONTEND_PORT='$FRONTEND_PORT' bash -s" << 'EOSSH'
+            "GHCR_TOKEN_B64='$GHCR_TOKEN_B64' API_IMAGE='$API_IMAGE' FRONTEND_IMAGE='$FRONTEND_IMAGE' SERVER_DIR='$SERVER_DIR' FRONTEND_PORT='$FRONTEND_PORT' bash -s" << 'EOSSH'
           set -euo pipefail
 
-          : "${GHCR_TOKEN:?GHCR_TOKEN not set}"
+          : "${GHCR_TOKEN_B64:?GHCR_TOKEN_B64 not set}"
           : "${API_IMAGE:?API_IMAGE not set}"
           : "${FRONTEND_IMAGE:?FRONTEND_IMAGE not set}"
           : "${SERVER_DIR:?SERVER_DIR not set}"
           : "${FRONTEND_PORT:?FRONTEND_PORT not set}"
+
+          GHCR_TOKEN="$(printf %s "$GHCR_TOKEN_B64" | base64 -d)"
 
           cd "$SERVER_DIR"
 
