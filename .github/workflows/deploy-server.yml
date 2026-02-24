@@ -23,7 +23,7 @@ permissions:
   packages: read
 
 env:
-  SERVER_HOST: 100.78.23.120
+  SERVER_HOST: nam.taild248f7.ts.net
   SERVER_USER: nam
   SERVER_DIR: ~/dockerize
   FRONTEND_PORT: "3001"
