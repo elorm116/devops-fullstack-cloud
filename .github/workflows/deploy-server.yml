@@ -115,6 +115,15 @@ jobs:
           # We'll still attempt SSH and let that provide the definitive error.
           ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
+          echo "Checking TCP reachability to ${SERVER_HOST}:22 (10s)..."
+          if ! timeout 10s bash -lc "</dev/tcp/${SERVER_HOST}/22" 2>/dev/null; then
+            echo "::error title=Cannot reach SSH port::${SERVER_HOST}:22 is not reachable from this GitHub runner." >&2
+            echo "If this is a Tailscale IP (100.x), this is almost always a Tailscale ACL/tag issue: allow tag:ci -> ${SERVER_HOST}:22." >&2
+            echo "Tailscale status (debug):" >&2
+            tailscale status >&2 || true
+            exit 1
+          fi
+
           REPO="${{ github.repository }}"
           API_IMAGE="ghcr.io/${REPO}/api:sha-${{ steps.sha.outputs.short }}"
           FRONTEND_IMAGE="ghcr.io/${REPO}/frontend:sha-${{ steps.sha.outputs.short }}"
@@ -122,6 +131,10 @@ jobs:
           GHCR_TOKEN_B64="$(printf %s "$GHCR_TOKEN" | base64 -w0)"
 
           ssh -i ~/.ssh/id_ed25519 \
+            -o ConnectTimeout=15 \
+            -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=2 \
             "$SERVER_USER@$SERVER_HOST" \
             "GHCR_TOKEN_B64='$GHCR_TOKEN_B64' API_IMAGE='$API_IMAGE' FRONTEND_IMAGE='$FRONTEND_IMAGE' SERVER_DIR='$SERVER_DIR' FRONTEND_PORT='$FRONTEND_PORT' bash -s" << 'EOSSH'
           set -euo pipefail
