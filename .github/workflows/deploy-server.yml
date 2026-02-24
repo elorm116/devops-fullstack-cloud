@@ -1,0 +1,143 @@
+name: Deploy to Server (Docker Compose)
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: ["main"]
+
+  # Allow manual deploys too
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA to deploy (optional; defaults to latest main workflow_run SHA)"
+        required: false
+        type: string
+
+concurrency:
+  group: deploy-server
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  SERVER_HOST: 100.78.23.120
+  SERVER_USER: nam
+  SERVER_DIR: ~/dockerize
+  FRONTEND_PORT: "3001"
+
+jobs:
+  deploy:
+    # Only auto-deploy if CI workflow succeeded
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Determine SHA
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.sha }}" ]; then
+            FULL_SHA="${{ inputs.sha }}"
+          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+            FULL_SHA="${{ github.event.workflow_run.head_sha }}"
+          else
+            FULL_SHA="${{ github.sha }}"
+          fi
+
+          SHORT_SHA="$(echo "$FULL_SHA" | cut -c1-7)"
+          echo "full=$FULL_SHA" >> "$GITHUB_OUTPUT"
+          echo "short=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy via SSH (pull GHCR tags, pin digests, restart compose)
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SERVER_SSH_KEY:-}" ]; then
+            echo "Missing secret SERVER_SSH_KEY" >&2
+            exit 1
+          fi
+          if [ -z "${GHCR_TOKEN:-}" ]; then
+            echo "Missing secret GHCR_TOKEN (PAT with read:packages, plus repo if private)" >&2
+            exit 1
+          fi
+
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts
+
+          REPO="${{ github.repository }}"
+          API_IMAGE="ghcr.io/${REPO}/api:sha-${{ steps.sha.outputs.short }}"
+          FRONTEND_IMAGE="ghcr.io/${REPO}/frontend:sha-${{ steps.sha.outputs.short }}"
+
+          ssh -i ~/.ssh/id_ed25519 \
+            "$SERVER_USER@$SERVER_HOST" \
+            "GHCR_TOKEN='$GHCR_TOKEN' API_IMAGE='$API_IMAGE' FRONTEND_IMAGE='$FRONTEND_IMAGE' SERVER_DIR='$SERVER_DIR' FRONTEND_PORT='$FRONTEND_PORT' bash -s" << 'EOSSH'
+          set -euo pipefail
+
+          : "${GHCR_TOKEN:?GHCR_TOKEN not set}"
+          : "${API_IMAGE:?API_IMAGE not set}"
+          : "${FRONTEND_IMAGE:?FRONTEND_IMAGE not set}"
+          : "${SERVER_DIR:?SERVER_DIR not set}"
+          : "${FRONTEND_PORT:?FRONTEND_PORT not set}"
+
+          cd "$SERVER_DIR"
+
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u elorm116 --password-stdin
+
+          docker pull "$API_IMAGE"
+          docker pull "$FRONTEND_IMAGE"
+
+          API_DIGEST="$(docker image inspect "$API_IMAGE" --format '{{index .RepoDigests 0}}')"
+          FRONTEND_DIGEST="$(docker image inspect "$FRONTEND_IMAGE" --format '{{index .RepoDigests 0}}')"
+
+          cat > docker-compose.prod.yaml <<EOF
+          services:
+            app:
+              container_name: myjs-app
+              image: ${API_DIGEST}
+              restart: unless-stopped
+              environment:
+                - NODE_ENV=production
+                - PORT=4000
+              expose:
+                - "4000"
+              healthcheck:
+                test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health >/dev/null || exit 1"]
+                interval: 10s
+                timeout: 3s
+                retries: 5
+                start_period: 10s
+
+            myblog:
+              container_name: myreact-app
+              image: ${FRONTEND_DIGEST}
+              restart: unless-stopped
+              ports:
+                - "${FRONTEND_PORT}:80"
+              depends_on:
+                app:
+                  condition: service_healthy
+          EOF
+
+          docker compose -f docker-compose.prod.yaml up -d --remove-orphans
+          docker compose -f docker-compose.prod.yaml ps
+          EOSSH
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🚀 Server Deploy" >> $GITHUB_STEP_SUMMARY
+          echo "Target: ${SERVER_USER}@${SERVER_HOST}" >> $GITHUB_STEP_SUMMARY
+          echo "Deployed SHA: ${{ steps.sha.outputs.full }}" >> $GITHUB_STEP_SUMMARY
+          echo "Frontend: http://${SERVER_HOST}:${FRONTEND_PORT}" >> $GITHUB_STEP_SUMMARY
