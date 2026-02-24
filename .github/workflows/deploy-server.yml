@@ -1,18 +1,17 @@
 name: Deploy to Server (Docker Compose)
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: ["main"]
-
-  # Allow manual deploys too
   workflow_dispatch:
     inputs:
       sha:
-        description: "Commit SHA to deploy (optional; defaults to latest main workflow_run SHA)"
+        description: "Commit SHA to deploy (optional; defaults to the commit on the selected branch)"
         required: false
         type: string
+      build_if_missing:
+        description: "If sha-* images are missing in GHCR, build+push them in this workflow"
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: deploy-server
@@ -30,20 +29,49 @@ env:
 
 jobs:
   deploy:
-    # Only auto-deploy if CI workflow succeeded
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
 
     steps:
-      - name: Validate Secrets
+      - name: Validate required secrets
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         shell: bash
         run: |
-          if [ -z "${{ secrets.TS_OAUTH_CLIENT_ID }}" ] || [ -z "${{ secrets.TS_OAUTH_SECRET }}" ]; then
-            echo "::error::Tailscale OAuth secrets are missing!"
-            exit 1
+          set -euo pipefail
+          [ -n "${TS_OAUTH_CLIENT_ID:-}" ] || { echo "::error title=Missing secret::TS_OAUTH_CLIENT_ID"; exit 1; }
+          [ -n "${TS_OAUTH_SECRET:-}" ] || { echo "::error title=Missing secret::TS_OAUTH_SECRET"; exit 1; }
+          [ -n "${SERVER_SSH_KEY:-}" ] || { echo "::error title=Missing secret::SERVER_SSH_KEY"; exit 1; }
+          [ -n "${GHCR_TOKEN:-}" ] || { echo "::error title=Missing secret::GHCR_TOKEN"; exit 1; }
+
+      - name: Determine deploy SHA + image tags
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.sha }}" ]; then
+            FULL_SHA="${{ inputs.sha }}"
+          else
+            FULL_SHA="${{ github.sha }}"
           fi
+
+          REPO_LOWER="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          SHORT_SHA="$(echo "$FULL_SHA" | cut -c1-7)"
+          API_IMAGE="ghcr.io/${REPO_LOWER}/api:sha-${SHORT_SHA}"
+          FRONTEND_IMAGE="ghcr.io/${REPO_LOWER}/frontend:sha-${SHORT_SHA}"
+
+          echo "full=$FULL_SHA" >> "$GITHUB_OUTPUT"
+          echo "short=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "repo_lower=$REPO_LOWER" >> "$GITHUB_OUTPUT"
+          echo "api_image=$API_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "frontend_image=$FRONTEND_IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout code at SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.full }}
 
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
@@ -52,77 +80,113 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Determine Metadata
-        id: meta
+      - name: Verify Tailscale connectivity (debug)
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          
-          # 1. Resolve the correct SHA
-          if [ "${{ github.event_name }}" = "workflow_run" ]; then
-            FULL_SHA="${{ github.event.workflow_run.head_sha }}"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.sha }}" ]; then
-            FULL_SHA="${{ inputs.sha }}"
-          else
-            FULL_SHA="${{ github.sha }}"
-          fi
-          
-          # 2. Normalize repo name (Must be lowercase for GHCR)
-          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          
-          echo "full=$FULL_SHA" >> "$GITHUB_OUTPUT"
-          echo "short=${FULL_SHA:0:7}" >> "$GITHUB_OUTPUT"
-          echo "repo_lower=$REPO_LOWER" >> "$GITHUB_OUTPUT"
+          tailscale status || true
+          tailscale ip -4 || true
+          timeout 20s tailscale ping "${SERVER_HOST}" || true
 
-      - name: Deploy via SSH
+      - name: Login to GHCR (for manifest/build)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: elorm116
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Check if images exist in GHCR
+        id: exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_IMAGE="${{ steps.meta.outputs.api_image }}"
+          FRONTEND_IMAGE="${{ steps.meta.outputs.frontend_image }}"
+
+          if docker manifest inspect "$API_IMAGE" >/dev/null 2>&1; then
+            echo "api=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "api=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if docker manifest inspect "$FRONTEND_IMAGE" >/dev/null 2>&1; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.exists.outputs.api != 'true' || steps.exists.outputs.frontend != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build + push API image (if missing)
+        if: steps.exists.outputs.api != 'true' && inputs.build_if_missing == true
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.api_image }}
+
+      - name: Build + push Frontend image (if missing)
+        if: steps.exists.outputs.frontend != 'true' && inputs.build_if_missing == true
+        uses: docker/build-push-action@v6
+        with:
+          context: ./myblog
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.frontend_image }}
+
+      - name: Fail if images missing and build disabled
+        if: inputs.build_if_missing != true && (steps.exists.outputs.api != 'true' || steps.exists.outputs.frontend != 'true')
+        shell: bash
+        run: |
+          echo "::error title=Images not found::One or more sha-* images do not exist in GHCR for this SHA, and build_if_missing=false." >&2
+          echo "API exists: ${{ steps.exists.outputs.api }}" >&2
+          echo "Frontend exists: ${{ steps.exists.outputs.frontend }}" >&2
+          exit 1
+
+      - name: Deploy via SSH (pull tags, pin digests, restart compose)
         env:
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          API_IMAGE: ${{ steps.meta.outputs.api_image }}
+          FRONTEND_IMAGE: ${{ steps.meta.outputs.frontend_image }}
         shell: bash
         run: |
           set -euo pipefail
 
-          # Setup SSH
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-          # Construct Image Paths
-          REPO_LOWER="${{ steps.meta.outputs.repo_lower }}"
-          SHORT_SHA="${{ steps.meta.outputs.short }}"
-          API_IMAGE="ghcr.io/${REPO_LOWER}/api:sha-${SHORT_SHA}"
-          FRONTEND_IMAGE="ghcr.io/${REPO_LOWER}/frontend:sha-${SHORT_SHA}"
+          echo "Checking TCP reachability to ${SERVER_HOST}:22 (10s)..."
+          timeout 10s bash -lc "</dev/tcp/${SERVER_HOST}/22" 2>/dev/null
 
-          # Encode token for safe transmission
           GHCR_TOKEN_B64="$(printf %s "$GHCR_TOKEN" | base64 -w0)"
 
           ssh -i ~/.ssh/id_ed25519 \
-            -o ConnectTimeout=30 \
+            -o ConnectTimeout=20 \
+            -o ConnectionAttempts=1 \
             "$SERVER_USER@$SERVER_HOST" \
-            "GHCR_TOKEN_B64='$GHCR_TOKEN_B64' API_IMAGE='$API_IMAGE' FRONTEND_IMAGE='$FRONTEND_IMAGE' SERVER_DIR='$SERVER_DIR' FRONTEND_PORT='$FRONTEND_PORT' bash -s" << 'EOSSH'
+            "GHCR_TOKEN_B64='$GHCR_TOKEN_B64' API_IMAGE='$API_IMAGE' FRONTEND_IMAGE='$FRONTEND_IMAGE' SERVER_DIR='$SERVER_DIR' FRONTEND_PORT='$FRONTEND_PORT' bash -s" <<'EOSSH'
           set -euo pipefail
 
-          # Decode token and login
           GHCR_TOKEN="$(printf %s "$GHCR_TOKEN_B64" | base64 -d)"
-          
-          # Use explicit username for reliable GHCR authentication
           echo "$GHCR_TOKEN" | docker login ghcr.io -u elorm116 --password-stdin
 
-          # Ensure Directory Exists
           SERVER_DIR="${SERVER_DIR/#\~/$HOME}"
           mkdir -p "$SERVER_DIR"
           cd "$SERVER_DIR"
 
-          # Pull and Pin to Digests (Immutability)
-          echo "Pulling images: $API_IMAGE and $FRONTEND_IMAGE"
           docker pull "$API_IMAGE"
           docker pull "$FRONTEND_IMAGE"
-          
+
           API_DIGEST="$(docker image inspect "$API_IMAGE" --format '{{index .RepoDigests 0}}')"
           FRONTEND_DIGEST="$(docker image inspect "$FRONTEND_IMAGE" --format '{{index .RepoDigests 0}}')"
 
-          # Generate Compose File
           cat > docker-compose.prod.yaml <<EOF
           services:
             app:
@@ -152,20 +216,14 @@ jobs:
                   condition: service_healthy
           EOF
 
-          # Deploy
           docker compose -f docker-compose.prod.yaml up -d --remove-orphans
           docker compose -f docker-compose.prod.yaml ps
-          
-          # Explicitly end the SSH block
-          exit
-          
-          # The line below MUST NOT have leading spaces
           EOSSH
 
       - name: Summary
         if: always()
         run: |
-          echo "## 🚀 Deployment Successful" >> $GITHUB_STEP_SUMMARY
-          echo "* **Host:** ${SERVER_HOST}" >> $GITHUB_STEP_SUMMARY
-          echo "* **SHA:** ${{ steps.meta.outputs.short }}" >> $GITHUB_STEP_SUMMARY
-          echo "* **URL:** http://${SERVER_HOST}:${FRONTEND_PORT}" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Server Deploy" >> $GITHUB_STEP_SUMMARY
+          echo "Target: ${SERVER_USER}@${SERVER_HOST}" >> $GITHUB_STEP_SUMMARY
+          echo "Deployed SHA: ${{ steps.meta.outputs.full }}" >> $GITHUB_STEP_SUMMARY
+          echo "Frontend: http://${SERVER_HOST}:${FRONTEND_PORT}" >> $GITHUB_STEP_SUMMARY
