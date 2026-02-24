@@ -59,7 +59,19 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
-          ping: ${{ env.SERVER_HOST }}
+
+      - name: Verify Tailscale connectivity (short)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Tailscale status (for debug):"
+          tailscale status || true
+          echo
+          echo "Pinging ${SERVER_HOST} via tailscale (max 30s)..."
+          if ! timeout 30s tailscale ping "$SERVER_HOST"; then
+            echo "::error title=Tailscale connectivity failed::Unable to reach ${SERVER_HOST} over Tailscale from the GitHub runner." >&2
+            exit 1
+          fi
 
       - name: Determine SHA
         id: sha
