@@ -37,19 +37,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Validate Tailscale OAuth secrets
-        env:
-          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      - name: Validate Secrets
         shell: bash
         run: |
-          set -euo pipefail
-          if [ -z "${TS_OAUTH_CLIENT_ID:-}" ]; then
-            echo "::error title=Missing secret::TS_OAUTH_CLIENT_ID is not set (Repo Settings → Secrets and variables → Actions)." >&2
-            exit 1
-          fi
-          if [ -z "${TS_OAUTH_SECRET:-}" ]; then
-            echo "::error title=Missing secret::TS_OAUTH_SECRET is not set (Repo Settings → Secrets and variables → Actions)." >&2
+          if [ -z "${{ secrets.TS_OAUTH_CLIENT_ID }}" ] || [ -z "${{ secrets.TS_OAUTH_SECRET }}" ]; then
+            echo "::error::Tailscale OAuth secrets are missing!"
             exit 1
           fi
 
@@ -60,38 +52,29 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Verify Tailscale connectivity (short)
-        continue-on-error: true
+      - name: Determine Metadata
+        id: meta
         shell: bash
         run: |
           set -euo pipefail
-          echo "Tailscale status (for debug):"
-          tailscale status || true
-          echo
-          echo "Tailscale IPs (for debug):"
-          tailscale ip -4 || true
-          echo
-          echo "Pinging ${SERVER_HOST} via tailscale (max 30s)..."
-          timeout 30s tailscale ping "$SERVER_HOST" || true
-
-      - name: Determine SHA
-        id: sha
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.sha }}" ]; then
-            FULL_SHA="${{ inputs.sha }}"
-          elif [ "${{ github.event_name }}" = "workflow_run" ]; then
+          
+          # 1. Resolve the correct SHA
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
             FULL_SHA="${{ github.event.workflow_run.head_sha }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.sha }}" ]; then
+            FULL_SHA="${{ inputs.sha }}"
           else
             FULL_SHA="${{ github.sha }}"
           fi
-
-          SHORT_SHA="$(echo "$FULL_SHA" | cut -c1-7)"
+          
+          # 2. Normalize repo name (Must be lowercase for GHCR)
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          
           echo "full=$FULL_SHA" >> "$GITHUB_OUTPUT"
-          echo "short=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "short=${FULL_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "repo_lower=$REPO_LOWER" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy via SSH (pull GHCR tags, pin digests, restart compose)
+      - name: Deploy via SSH
         env:
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
@@ -99,110 +82,40 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${SERVER_SSH_KEY:-}" ]; then
-            echo "Missing secret SERVER_SSH_KEY" >&2
-            exit 1
-          fi
-          if [ -z "${GHCR_TOKEN:-}" ]; then
-            echo "Missing secret GHCR_TOKEN (PAT with read:packages, plus repo if private)" >&2
-            exit 1
-          fi
-
+          # Setup SSH
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          # ssh-keyscan can return non-zero if the host is temporarily unreachable.
-          # We'll still attempt SSH and let that provide the definitive error.
           ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-          echo "Checking TCP reachability to ${SERVER_HOST}:22 (10s)..."
-          if ! timeout 10s bash -lc "</dev/tcp/${SERVER_HOST}/22" 2>/dev/null; then
-            echo "::error title=Cannot reach SSH port::${SERVER_HOST}:22 is not reachable from this GitHub runner." >&2
-            echo "If this is a Tailscale IP (100.x), this is almost always a Tailscale ACL/tag issue: allow tag:ci -> ${SERVER_HOST}:22." >&2
-            echo "Tailscale status (debug):" >&2
-            tailscale status >&2 || true
-            exit 1
-          fi
+          # Construct Image Paths
+          REPO_LOWER="${{ steps.meta.outputs.repo_lower }}"
+          SHORT_SHA="${{ steps.meta.outputs.short }}"
+          API_IMAGE="ghcr.io/${REPO_LOWER}/api:sha-${SHORT_SHA}"
+          FRONTEND_IMAGE="ghcr.io/${REPO_LOWER}/frontend:sha-${SHORT_SHA}"
 
-          REPO="${{ github.repository }}"
-          API_IMAGE="ghcr.io/${REPO}/api:sha-${{ steps.sha.outputs.short }}"
-          FRONTEND_IMAGE="ghcr.io/${REPO}/frontend:sha-${{ steps.sha.outputs.short }}"
-
+          # Encode token for safe transmission
           GHCR_TOKEN_B64="$(printf %s "$GHCR_TOKEN" | base64 -w0)"
 
           ssh -i ~/.ssh/id_ed25519 \
-            -o ConnectTimeout=15 \
-            -o ConnectionAttempts=1 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=2 \
+            -o ConnectTimeout=30 \
             "$SERVER_USER@$SERVER_HOST" \
             "GHCR_TOKEN_B64='$GHCR_TOKEN_B64' API_IMAGE='$API_IMAGE' FRONTEND_IMAGE='$FRONTEND_IMAGE' SERVER_DIR='$SERVER_DIR' FRONTEND_PORT='$FRONTEND_PORT' bash -s" << 'EOSSH'
           set -euo pipefail
 
-          : "${GHCR_TOKEN_B64:?GHCR_TOKEN_B64 not set}"
-          : "${API_IMAGE:?API_IMAGE not set}"
-          : "${FRONTEND_IMAGE:?FRONTEND_IMAGE not set}"
-          : "${SERVER_DIR:?SERVER_DIR not set}"
-          : "${FRONTEND_PORT:?FRONTEND_PORT not set}"
-
+          # Decode token and login
           GHCR_TOKEN="$(printf %s "$GHCR_TOKEN_B64" | base64 -d)"
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-          # Expand leading ~ in SERVER_DIR (tilde expansion does not occur in variables).
+          # Ensure Directory Exists
           SERVER_DIR="${SERVER_DIR/#\~/$HOME}"
-          if [ ! -d "$SERVER_DIR" ]; then
-            echo "Server dir does not exist: $SERVER_DIR" >&2
-            echo "Home is: $HOME" >&2
-            ls -la "$HOME" >&2 || true
-            exit 1
-          fi
-
+          mkdir -p "$SERVER_DIR"
           cd "$SERVER_DIR"
 
-          echo "$GHCR_TOKEN" | docker login ghcr.io -u elorm116 --password-stdin
-
+          # Pull and Pin to Digests (Immutability)
           docker pull "$API_IMAGE"
           docker pull "$FRONTEND_IMAGE"
-
           API_DIGEST="$(docker image inspect "$API_IMAGE" --format '{{index .RepoDigests 0}}')"
           FRONTEND_DIGEST="$(docker image inspect "$FRONTEND_IMAGE" --format '{{index .RepoDigests 0}}')"
 
-          cat > docker-compose.prod.yaml <<EOF
-          services:
-            app:
-              container_name: myjs-app
-              image: ${API_DIGEST}
-              restart: unless-stopped
-              environment:
-                - NODE_ENV=production
-                - PORT=4000
-              expose:
-                - "4000"
-              healthcheck:
-                test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health >/dev/null || exit 1"]
-                interval: 10s
-                timeout: 3s
-                retries: 5
-                start_period: 10s
-
-            myblog:
-              container_name: myreact-app
-              image: ${FRONTEND_DIGEST}
-              restart: unless-stopped
-              ports:
-                - "${FRONTEND_PORT}:80"
-              depends_on:
-                app:
-                  condition: service_healthy
-          EOF
-
-          docker compose -f docker-compose.prod.yaml up -d --remove-orphans
-          docker compose -f docker-compose.prod.yaml ps
-          EOSSH
-
-      - name: Summary
-        if: always()
-        run: |
-          echo "## 🚀 Server Deploy" >> $GITHUB_STEP_SUMMARY
-          echo "Target: ${SERVER_USER}@${SERVER_HOST}" >> $GITHUB_STEP_SUMMARY
-          echo "Deployed SHA: ${{ steps.sha.outputs.full }}" >> $GITHUB_STEP_SUMMARY
-          echo "Frontend: http://${SERVER_HOST}:${FRONTEND_PORT}" >> $GITHUB_STEP_SUMMARY
+          # Generate Compose File
