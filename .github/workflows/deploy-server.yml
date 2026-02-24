@@ -111,7 +111,9 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts
+          # ssh-keyscan can return non-zero if the host is temporarily unreachable.
+          # We'll still attempt SSH and let that provide the definitive error.
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
           REPO="${{ github.repository }}"
           API_IMAGE="ghcr.io/${REPO}/api:sha-${{ steps.sha.outputs.short }}"
@@ -131,6 +133,15 @@ jobs:
           : "${FRONTEND_PORT:?FRONTEND_PORT not set}"
 
           GHCR_TOKEN="$(printf %s "$GHCR_TOKEN_B64" | base64 -d)"
+
+          # Expand leading ~ in SERVER_DIR (tilde expansion does not occur in variables).
+          SERVER_DIR="${SERVER_DIR/#\~/$HOME}"
+          if [ ! -d "$SERVER_DIR" ]; then
+            echo "Server dir does not exist: $SERVER_DIR" >&2
+            echo "Home is: $HOME" >&2
+            ls -la "$HOME" >&2 || true
+            exit 1
+          fi
 
           cd "$SERVER_DIR"
 
