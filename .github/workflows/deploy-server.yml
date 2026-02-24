@@ -96,7 +96,7 @@ jobs:
           username: elorm116
           password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Check if images exist in GHCR
+      - name: Check if images exist in GHCR (and include arm64+amd64)
         id: exists
         shell: bash
         run: |
@@ -104,17 +104,32 @@ jobs:
           API_IMAGE="${{ steps.meta.outputs.api_image }}"
           FRONTEND_IMAGE="${{ steps.meta.outputs.frontend_image }}"
 
-          if docker manifest inspect "$API_IMAGE" >/dev/null 2>&1; then
+          manifest_has_arches() {
+            local image="$1"
+            local manifest
+            if ! manifest="$(docker manifest inspect "$image" 2>/dev/null)"; then
+              return 1
+            fi
+            echo "$manifest" | grep -q '"architecture": "amd64"' || return 1
+            echo "$manifest" | grep -q '"architecture": "arm64"' || return 1
+            return 0
+          }
+
+          if manifest_has_arches "$API_IMAGE"; then
             echo "api=true" >> "$GITHUB_OUTPUT"
           else
             echo "api=false" >> "$GITHUB_OUTPUT"
           fi
 
-          if docker manifest inspect "$FRONTEND_IMAGE" >/dev/null 2>&1; then
+          if manifest_has_arches "$FRONTEND_IMAGE"; then
             echo "frontend=true" >> "$GITHUB_OUTPUT"
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Set up QEMU (multi-arch)
+        if: steps.exists.outputs.api != 'true' || steps.exists.outputs.frontend != 'true'
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         if: steps.exists.outputs.api != 'true' || steps.exists.outputs.frontend != 'true'
@@ -125,7 +140,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./api
-          platforms: linux/amd64, linux/arm64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.api_image }}
 
@@ -134,7 +149,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./myblog
-          platforms: linux/amd64, linux/arm64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.frontend_image }}
 
