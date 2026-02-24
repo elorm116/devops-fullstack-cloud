@@ -105,7 +105,9 @@ jobs:
 
           # Decode token and login
           GHCR_TOKEN="$(printf %s "$GHCR_TOKEN_B64" | base64 -d)"
-          echo "$GHCR_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          
+          # Use explicit username for reliable GHCR authentication
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u elorm116 --password-stdin
 
           # Ensure Directory Exists
           SERVER_DIR="${SERVER_DIR/#\~/$HOME}"
@@ -113,9 +115,57 @@ jobs:
           cd "$SERVER_DIR"
 
           # Pull and Pin to Digests (Immutability)
+          echo "Pulling images: $API_IMAGE and $FRONTEND_IMAGE"
           docker pull "$API_IMAGE"
           docker pull "$FRONTEND_IMAGE"
+          
           API_DIGEST="$(docker image inspect "$API_IMAGE" --format '{{index .RepoDigests 0}}')"
           FRONTEND_DIGEST="$(docker image inspect "$FRONTEND_IMAGE" --format '{{index .RepoDigests 0}}')"
 
           # Generate Compose File
+          cat > docker-compose.prod.yaml <<EOF
+          services:
+            app:
+              container_name: myjs-app
+              image: ${API_DIGEST}
+              restart: unless-stopped
+              environment:
+                - NODE_ENV=production
+                - PORT=4000
+              expose:
+                - "4000"
+              healthcheck:
+                test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health >/dev/null || exit 1"]
+                interval: 10s
+                timeout: 3s
+                retries: 5
+                start_period: 10s
+
+            myblog:
+              container_name: myreact-app
+              image: ${FRONTEND_DIGEST}
+              restart: unless-stopped
+              ports:
+                - "${FRONTEND_PORT}:80"
+              depends_on:
+                app:
+                  condition: service_healthy
+          EOF
+
+          # Deploy
+          docker compose -f docker-compose.prod.yaml up -d --remove-orphans
+          docker compose -f docker-compose.prod.yaml ps
+          
+          # Explicitly end the SSH block
+          exit
+          
+          # The line below MUST NOT have leading spaces
+          EOSSH
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🚀 Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "* **Host:** ${SERVER_HOST}" >> $GITHUB_STEP_SUMMARY
+          echo "* **SHA:** ${{ steps.meta.outputs.short }}" >> $GITHUB_STEP_SUMMARY
+          echo "* **URL:** http://${SERVER_HOST}:${FRONTEND_PORT}" >> $GITHUB_STEP_SUMMARY
