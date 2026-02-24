@@ -1,77 +1,65 @@
-name: Deploy to Server (Docker Compose)
+name: Deploy to Server (Docker Hub)
 
 on:
   workflow_dispatch:
     inputs:
       sha:
-        description: "Commit SHA to deploy (optional; defaults to the commit on the selected branch)"
+        description: "Commit SHA to deploy"
         required: false
-        type: string
-      build_if_missing:
-        description: "If sha-* images are missing in GHCR, build+push them in this workflow"
-        required: false
-        type: boolean
-        default: true
-
-concurrency:
-  group: deploy-server
-  cancel-in-progress: true
-
-permissions:
-  contents: read
-  packages: read
 
 env:
+  DOCKERHUB_USER: elorm116
   SERVER_HOST: nam.taild248f7.ts.net
   SERVER_USER: nam
   SERVER_DIR: ~/dockerize
   FRONTEND_PORT: "3001"
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Validate required secrets
-        env:
-          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
-          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [ -n "${TS_OAUTH_CLIENT_ID:-}" ] || { echo "::error title=Missing secret::TS_OAUTH_CLIENT_ID"; exit 1; }
-          [ -n "${TS_OAUTH_SECRET:-}" ] || { echo "::error title=Missing secret::TS_OAUTH_SECRET"; exit 1; }
-          [ -n "${SERVER_SSH_KEY:-}" ] || { echo "::error title=Missing secret::SERVER_SSH_KEY"; exit 1; }
-          [ -n "${GHCR_TOKEN:-}" ] || { echo "::error title=Missing secret::GHCR_TOKEN"; exit 1; }
-
-      - name: Determine deploy SHA + image tags
+      - name: Determine Metadata
         id: meta
-        shell: bash
         run: |
-          set -euo pipefail
-          if [ -n "${{ inputs.sha }}" ]; then
-            FULL_SHA="${{ inputs.sha }}"
-          else
-            FULL_SHA="${{ github.sha }}"
-          fi
-
-          REPO_LOWER="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
-          SHORT_SHA="$(echo "$FULL_SHA" | cut -c1-7)"
-          API_IMAGE="ghcr.io/${REPO_LOWER}/api:sha-${SHORT_SHA}"
-          FRONTEND_IMAGE="ghcr.io/${REPO_LOWER}/frontend:sha-${SHORT_SHA}"
-
-          echo "full=$FULL_SHA" >> "$GITHUB_OUTPUT"
+          FULL_SHA="${{ github.event.inputs.sha || github.sha }}"
+          SHORT_SHA="${FULL_SHA:0:7}"
           echo "short=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "repo_lower=$REPO_LOWER" >> "$GITHUB_OUTPUT"
-          echo "api_image=$API_IMAGE" >> "$GITHUB_OUTPUT"
-          echo "frontend_image=$FRONTEND_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "api_image=${{ env.DOCKERHUB_USER }}/mjs-app:sha-$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "frontend_image=${{ env.DOCKERHUB_USER }}/myreact-app:sha-$SHORT_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout code at SHA
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          ref: ${{ steps.meta.outputs.full }}
+          username: ${{ env.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push API (mjs-app)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.api_image }},${{ env.DOCKERHUB_USER }}/mjs-app:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and Push Frontend (myreact-app)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./myblog
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.frontend_image }},${{ env.DOCKERHUB_USER }}/myreact-app:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
@@ -80,133 +68,52 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Verify Tailscale connectivity (debug)
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -euo pipefail
-          tailscale status || true
-          tailscale ip -4 || true
-          timeout 20s tailscale ping "${SERVER_HOST}" || true
-
-      - name: Login to GHCR (for manifest/build)
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: elorm116
-          password: ${{ secrets.GHCR_TOKEN }}
-
-      - name: Check if images exist in GHCR (and include arm64+amd64)
-        id: exists
-        shell: bash
-        run: |
-          set -euo pipefail
-          API_IMAGE="${{ steps.meta.outputs.api_image }}"
-          FRONTEND_IMAGE="${{ steps.meta.outputs.frontend_image }}"
-
-          manifest_has_arches() {
-            local image="$1"
-            local manifest
-            if ! manifest="$(docker manifest inspect "$image" 2>/dev/null)"; then
-              return 1
-            fi
-            echo "$manifest" | grep -q '"architecture": "amd64"' || return 1
-            echo "$manifest" | grep -q '"architecture": "arm64"' || return 1
-            return 0
-          }
-
-          if manifest_has_arches "$API_IMAGE"; then
-            echo "api=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "api=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          if manifest_has_arches "$FRONTEND_IMAGE"; then
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "frontend=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Set up QEMU (multi-arch)
-        if: steps.exists.outputs.api != 'true' || steps.exists.outputs.frontend != 'true'
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        if: steps.exists.outputs.api != 'true' || steps.exists.outputs.frontend != 'true'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build + push API image (if missing)
-        if: steps.exists.outputs.api != 'true' && inputs.build_if_missing == true
-        uses: docker/build-push-action@v6
-        with:
-          context: ./api
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.api_image }}
-
-      - name: Build + push Frontend image (if missing)
-        if: steps.exists.outputs.frontend != 'true' && inputs.build_if_missing == true
-        uses: docker/build-push-action@v6
-        with:
-          context: ./myblog
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.frontend_image }}
-
-      - name: Fail if images missing and build disabled
-        if: inputs.build_if_missing != true && (steps.exists.outputs.api != 'true' || steps.exists.outputs.frontend != 'true')
-        shell: bash
-        run: |
-          echo "::error title=Images not found::One or more sha-* images do not exist in GHCR for this SHA, and build_if_missing=false." >&2
-          echo "API exists: ${{ steps.exists.outputs.api }}" >&2
-          echo "Frontend exists: ${{ steps.exists.outputs.frontend }}" >&2
-          exit 1
-
-      - name: Deploy via SSH (pull tags, pin digests, restart compose)
+      - name: Deploy via SSH
         env:
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          SERVER_FINGERPRINT: ${{ secrets.SERVER_FINGERPRINT }}
           API_IMAGE: ${{ steps.meta.outputs.api_image }}
           FRONTEND_IMAGE: ${{ steps.meta.outputs.frontend_image }}
-        shell: bash
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          set -euo pipefail
-
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-          echo "Checking TCP reachability to ${SERVER_HOST}:22 (10s)..."
-          timeout 10s bash -lc "</dev/tcp/${SERVER_HOST}/22" 2>/dev/null
+          # Use stored fingerprint instead of blind ssh-keyscan
+          printf '%s\n' "$SERVER_FINGERPRINT" >> ~/.ssh/known_hosts
 
-          GHCR_TOKEN_B64="$(printf %s "$GHCR_TOKEN" | base64 -w0)"
-
-          ssh -i ~/.ssh/id_ed25519 \
-            -o ConnectTimeout=20 \
-            -o ConnectionAttempts=1 \
-            "$SERVER_USER@$SERVER_HOST" \
-            "GHCR_TOKEN_B64='$GHCR_TOKEN_B64' API_IMAGE='$API_IMAGE' FRONTEND_IMAGE='$FRONTEND_IMAGE' SERVER_DIR='$SERVER_DIR' FRONTEND_PORT='$FRONTEND_PORT' bash -s" <<'EOSSH'
+          ssh -i ~/.ssh/id_ed25519 "$SERVER_USER@$SERVER_HOST" \
+            API_IMAGE="$API_IMAGE" \
+            FRONTEND_IMAGE="$FRONTEND_IMAGE" \
+            SERVER_DIR="$SERVER_DIR" \
+            FRONTEND_PORT="$FRONTEND_PORT" \
+            DOCKERHUB_USER="$DOCKERHUB_USER" \
+            DOCKERHUB_TOKEN="$DOCKERHUB_TOKEN" \
+            bash -s <<'EOSSH'
           set -euo pipefail
 
-          GHCR_TOKEN="$(printf %s "$GHCR_TOKEN_B64" | base64 -d)"
-          echo "$GHCR_TOKEN" | docker login ghcr.io -u elorm116 --password-stdin
+          # Login to Docker Hub on server to avoid anonymous rate limits
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
 
-          SERVER_DIR="${SERVER_DIR/#\~/$HOME}"
-          mkdir -p "$SERVER_DIR"
-          cd "$SERVER_DIR"
+          mkdir -p "$SERVER_DIR" && cd "$SERVER_DIR"
 
+          # Pull new images
           docker pull "$API_IMAGE"
           docker pull "$FRONTEND_IMAGE"
 
-          API_DIGEST="$(docker image inspect "$API_IMAGE" --format '{{index .RepoDigests 0}}')"
-          FRONTEND_DIGEST="$(docker image inspect "$FRONTEND_IMAGE" --format '{{index .RepoDigests 0}}')"
+          # Pin to digests for immutability
+          API_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$API_IMAGE")
+          FRONTEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$FRONTEND_IMAGE")
 
-          cat > docker-compose.prod.yaml <<EOF
+          # Backup current compose file for rollback
+          [ -f docker-compose.prod.yaml ] && cp docker-compose.prod.yaml docker-compose.prod.yaml.bak
+
+          cat > docker-compose.prod.yaml << EOF
           services:
             app:
-              container_name: myjs-app
               image: ${API_DIGEST}
+              container_name: myjs-app
               restart: unless-stopped
               environment:
                 - NODE_ENV=production
@@ -217,12 +124,12 @@ jobs:
                 test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health >/dev/null || exit 1"]
                 interval: 10s
                 timeout: 3s
-                retries: 5
-                start_period: 10s
+                retries: 3
+                start_period: 15s
 
             myblog:
-              container_name: myreact-app
               image: ${FRONTEND_DIGEST}
+              container_name: myreact-app
               restart: unless-stopped
               ports:
                 - "${FRONTEND_PORT}:80"
@@ -231,14 +138,14 @@ jobs:
                   condition: service_healthy
           EOF
 
-          docker compose -f docker-compose.prod.yaml up -d --remove-orphans
-          docker compose -f docker-compose.prod.yaml ps
-          EOSSH
+          # Deploy, and rollback if it fails
+          if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans; then
+            echo "Deploy failed — rolling back..."
+            [ -f docker-compose.prod.yaml.bak ] && mv docker-compose.prod.yaml.bak docker-compose.prod.yaml
+            docker compose -f docker-compose.prod.yaml up -d --remove-orphans
+            exit 1
+          fi
 
-      - name: Summary
-        if: always()
-        run: |
-          echo "## 🚀 Server Deploy" >> $GITHUB_STEP_SUMMARY
-          echo "Target: ${SERVER_USER}@${SERVER_HOST}" >> $GITHUB_STEP_SUMMARY
-          echo "Deployed SHA: ${{ steps.meta.outputs.full }}" >> $GITHUB_STEP_SUMMARY
-          echo "Frontend: http://${SERVER_HOST}:${FRONTEND_PORT}" >> $GITHUB_STEP_SUMMARY
+          # Cleanup old dangling images to free disk space
+          docker image prune -f
+          EOSSH

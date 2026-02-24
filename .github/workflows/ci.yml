@@ -1,20 +1,22 @@
 name: CI
 
 on:
-  push:
-    branches: ["main"]
-    paths:
-      - 'api/**'
-      - 'myblog/**'
-      - 'k8s/**'
-      - '.github/workflows/**'
-  pull_request:
-    branches: ["main"]
-    paths:
-      - 'api/**'
-      - 'myblog/**'
-      - 'k8s/**'
-      - '.github/workflows/**'
+  workflow_dispatch:
+    
+  # push:
+  #   branches: ["main"]
+  #   paths:
+  #     - 'api/**'
+  #     - 'myblog/**'
+  #     - 'k8s/**'
+  #     - '.github/workflows/**'
+  # pull_request:
+  #   branches: ["main"]
+  #   paths:
+  #     - 'api/**'
+  #     - 'myblog/**'
+  #     - 'k8s/**'
+  #     - '.github/workflows/**'
 
 jobs:
   # ─── Frontend Quality Check ───────────────────────────────────────
