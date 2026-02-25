@@ -86,12 +86,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
       security-events: write  # ← Required to upload Trivy results to GitHub Security tab
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for git-describe versioning
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -99,33 +100,47 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GHCR
+      - name: Login to Docker Hub
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: elorm116
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Generate a human-readable version: v1.2.3 from tag, or 0.0.0-7-gabcdef0
+      - name: Determine version
+        id: version
+        run: |
+          VERSION=$(git describe --tags --always 2>/dev/null || echo "0.0.0-$(git rev-list --count HEAD)-g$(git rev-parse --short HEAD)")
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
 
       # ─── API ──────────────────────────────────────────────────────
       - name: Extract API Metadata
         id: meta-api
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}/api
+          images: elorm116/mjs-app
           tags: |
             type=sha,format=short
             type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and Push API
         uses: docker/build-push-action@v6
         with:
           context: ./api
+          target: production
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-api.outputs.tags }}
           labels: ${{ steps.meta-api.outputs.labels }}
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -153,20 +168,27 @@ jobs:
         id: meta-frontend
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}/frontend
+          images: elorm116/myreact-app
           tags: |
             type=sha,format=short
             type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and Push Frontend
         uses: docker/build-push-action@v6
         with:
           context: ./myblog
+          target: production
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-frontend.outputs.tags }}
           labels: ${{ steps.meta-frontend.outputs.labels }}
+          build-args: |
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -243,11 +265,11 @@ jobs:
           
           # Deploy API with the new image tag
           kubectl set image deployment/api-deployment \
-            api-container=ghcr.io/${{ github.repository }}/api:sha-${SHORT_SHA}
+            api-container=elorm116/mjs-app:sha-${SHORT_SHA}
           
           # Deploy Frontend with the new image tag
           kubectl set image deployment/frontend-deployment \
-            frontend-container=ghcr.io/${{ github.repository }}/frontend:sha-${SHORT_SHA}
+            frontend-container=elorm116/myreact-app:sha-${SHORT_SHA}
           
           # Wait for rollouts to finish
           kubectl rollout status deployment/api-deployment --timeout=120s

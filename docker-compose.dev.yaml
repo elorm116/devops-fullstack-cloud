@@ -1,0 +1,66 @@
+# Local development override — run with:
+#   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up --build
+#
+# This builds images locally from source instead of pulling from Docker Hub,
+# and uses the development stage with hot-reloading.
+
+services:
+  db:
+    image: mongo:7
+    container_name: mongodb
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - blog-network
+
+  app:
+    build:
+      context: ./api
+      target: development
+    image: myjs-app:dev
+    container_name: api_container
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=development
+      - PORT=4000
+      - MONGO_URI=mongodb://db:27017/blog
+      - JWT_SECRET=local-dev-secret
+    volumes:
+      - ./api:/app
+      - /app/node_modules
+    depends_on:
+      db:
+        condition: service_started
+    networks:
+      - blog-network
+
+  myblog:
+    build:
+      context: ./myblog
+      target: development
+    image: myreact-app:dev
+    container_name: myblog_container
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:4000/api
+    volumes:
+      - ./myblog:/app
+      - /app/node_modules
+    depends_on:
+      - app
+    networks:
+      - blog-network
+
+volumes:
+  mongo-data:
+
+networks:
+  blog-network:
+    driver: bridge

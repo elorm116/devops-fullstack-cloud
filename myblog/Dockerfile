@@ -34,6 +34,17 @@ RUN npm run build
 # --- Stage 4: Production (Final Image - Nginx) ---
 FROM nginx:stable-alpine AS production
 
+# OCI image labels — injected at build time by CI
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION
+LABEL org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.title="myreact-app" \
+      org.opencontainers.image.description="Mali's Blog — Frontend" \
+      org.opencontainers.image.source="https://github.com/elorm116/dockerize"
+
 # Copy the static files from the build stage to Nginx web root
 COPY --from=build /app/build /usr/share/nginx/html
 

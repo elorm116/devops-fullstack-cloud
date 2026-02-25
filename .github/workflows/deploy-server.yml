@@ -4,7 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: "Commit SHA to deploy"
+        description: "Commit SHA to deploy (default: latest)"
+        required: false
+      version:
+        description: "Version tag (e.g. v1.2.0) — optional, adds semver tag to images"
         required: false
 
 env:
@@ -23,9 +26,29 @@ jobs:
         run: |
           FULL_SHA="${{ github.event.inputs.sha || github.sha }}"
           SHORT_SHA="${FULL_SHA:0:7}"
-          echo "short=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          VERSION="${{ github.event.inputs.version }}"
+          BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Primary tag: sha-based for traceability
+          API_TAGS="${{ env.DOCKERHUB_USER }}/mjs-app:sha-${SHORT_SHA},${{ env.DOCKERHUB_USER }}/mjs-app:latest"
+          FE_TAGS="${{ env.DOCKERHUB_USER }}/myreact-app:sha-${SHORT_SHA},${{ env.DOCKERHUB_USER }}/myreact-app:latest"
+
+          # If a version tag was provided, add semver tags (v1.2.0 → 1.2.0 + 1.2)
+          if [[ -n "$VERSION" ]]; then
+            SEMVER="${VERSION#v}"           # strip leading 'v'
+            MINOR="${SEMVER%.*}"            # 1.2.0 → 1.2
+            API_TAGS="${API_TAGS},${{ env.DOCKERHUB_USER }}/mjs-app:${SEMVER},${{ env.DOCKERHUB_USER }}/mjs-app:${MINOR}"
+            FE_TAGS="${FE_TAGS},${{ env.DOCKERHUB_USER }}/myreact-app:${SEMVER},${{ env.DOCKERHUB_USER }}/myreact-app:${MINOR}"
+          fi
+
+          echo "short=$SHORT_SHA"         >> "$GITHUB_OUTPUT"
+          echo "full_sha=$FULL_SHA"       >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION:-sha-$SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$BUILD_DATE"   >> "$GITHUB_OUTPUT"
           echo "api_image=${{ env.DOCKERHUB_USER }}/mjs-app:sha-$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "frontend_image=${{ env.DOCKERHUB_USER }}/myreact-app:sha-$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "api_tags=$API_TAGS"       >> "$GITHUB_OUTPUT"
+          echo "fe_tags=$FE_TAGS"         >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
 
@@ -45,9 +68,14 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./api
+          target: production
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.api_image }},${{ env.DOCKERHUB_USER }}/mjs-app:latest
+          tags: ${{ steps.meta.outputs.api_tags }}
+          build-args: |
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+            VCS_REF=${{ steps.meta.outputs.full_sha }}
+            VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -55,9 +83,14 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./myblog
+          target: production
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.frontend_image }},${{ env.DOCKERHUB_USER }}/myreact-app:latest
+          tags: ${{ steps.meta.outputs.fe_tags }}
+          build-args: |
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+            VCS_REF=${{ steps.meta.outputs.full_sha }}
+            VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -75,6 +108,7 @@ jobs:
           API_IMAGE: ${{ steps.meta.outputs.api_image }}
           FRONTEND_IMAGE: ${{ steps.meta.outputs.frontend_image }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
@@ -90,6 +124,7 @@ jobs:
             FRONTEND_PORT="$FRONTEND_PORT" \
             DOCKERHUB_USER="$DOCKERHUB_USER" \
             DOCKERHUB_TOKEN="$DOCKERHUB_TOKEN" \
+            JWT_SECRET="$JWT_SECRET" \
             bash -s <<'EOSSH'
           set -euo pipefail
 
@@ -111,6 +146,15 @@ jobs:
 
           cat > docker-compose.prod.yaml << EOF
           services:
+            db:
+              image: mongo:7
+              container_name: mongodb
+              restart: unless-stopped
+              volumes:
+                - mongo-data:/data/db
+              networks:
+                - blog-network
+
             app:
               image: ${API_DIGEST}
               container_name: myjs-app
@@ -118,14 +162,21 @@ jobs:
               environment:
                 - NODE_ENV=production
                 - PORT=4000
+                - MONGO_URI=mongodb://db:27017/blog
+                - JWT_SECRET=${JWT_SECRET}
               expose:
                 - "4000"
+              depends_on:
+                db:
+                  condition: service_started
               healthcheck:
                 test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health >/dev/null || exit 1"]
                 interval: 10s
                 timeout: 3s
                 retries: 3
                 start_period: 15s
+              networks:
+                - blog-network
 
             myblog:
               image: ${FRONTEND_DIGEST}
@@ -136,6 +187,15 @@ jobs:
               depends_on:
                 app:
                   condition: service_healthy
+              networks:
+                - blog-network
+
+          volumes:
+            mongo-data:
+
+          networks:
+            blog-network:
+              driver: bridge
           EOF
 
           # Deploy, and rollback if it fails

@@ -24,6 +24,17 @@ CMD ["npm", "run", "dev"]
 # Production stage
 FROM base AS production
 
+# OCI image labels — injected at build time by CI
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION
+LABEL org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.title="myjs-app" \
+      org.opencontainers.image.description="Mali's Blog — API" \
+      org.opencontainers.image.source="https://github.com/elorm116/dockerize"
+
 ENV NODE_ENV=production
 
 RUN npm ci --only=production
