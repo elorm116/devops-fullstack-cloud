@@ -120,7 +120,7 @@ jobs:
         id: meta-api
         uses: docker/metadata-action@v5
         with:
-          images: elorm116/mjs-app
+          images: elorm116/myjs-app
           tags: |
             type=sha,format=short
             type=ref,event=branch
@@ -265,7 +265,7 @@ jobs:
           
           # Deploy API with the new image tag
           kubectl set image deployment/api-deployment \
-            api-container=elorm116/mjs-app:sha-${SHORT_SHA}
+            api-container=elorm116/myjs-app:sha-${SHORT_SHA}
           
           # Deploy Frontend with the new image tag
           kubectl set image deployment/frontend-deployment \

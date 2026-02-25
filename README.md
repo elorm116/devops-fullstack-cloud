@@ -124,7 +124,7 @@ git push origin main --tags
 On manual trigger (workflow_dispatch):
 1. **Build** — multi-platform Docker images (amd64 + arm64)
 2. **Tag** — SHA tag + semver tags + latest
-3. **Push** — to Docker Hub (`elorm116/mjs-app`, `elorm116/myreact-app`)
+3. **Push** — to Docker Hub (`elorm116/myjs-app`, `elorm116/myreact-app`)
 4. **Connect** — join Tailscale network via OAuth
 5. **Deploy** — SSH into server, pull images, pin to digest, docker compose up
 6. **Rollback** — automatic rollback if deploy fails
