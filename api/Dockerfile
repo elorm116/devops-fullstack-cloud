@@ -37,7 +37,7 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
 
 ENV NODE_ENV=production
 
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 COPY . .
 
