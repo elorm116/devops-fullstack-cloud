@@ -1,14 +1,39 @@
-# Dockerized Blog App — Full DevOps Portfolio Project
+# Mali's Blog — Full DevOps Portfolio Project
 
-A production-grade two-service application showcasing end-to-end DevOps practices:
-- **API**: Node.js/Express backend with health endpoint
-- **Frontend**: React → Nginx multi-stage build
-- **CI/CD**: GitHub Actions pipeline → build, scan, publish, deploy
-- **IaC**: Terraform provisioning Linode LKE Kubernetes cluster
-- **K8s**: Deployments with probes, limits, Ingress, and TLS
-- **Observability**: Prometheus + Grafana via kube-prometheus-stack (Helm)
+A production-grade blog application showcasing end-to-end DevOps practices — from local development through CI/CD to production deployment.
+
+- **API**: Node.js/Express backend with JWT auth, health checks, MongoDB
+- **Frontend**: React SPA → Nginx multi-stage build
+- **CI/CD**: GitHub Actions → build, scan, push to Docker Hub, deploy via SSH
+- **Infrastructure**: Docker Compose on Tailscale server (current), Kubernetes on Linode/AWS (planned)
+- **IaC**: Terraform provisioning (Linode LKE, AWS EKS — planned)
+- **Observability**: Prometheus + Grafana via kube-prometheus-stack (planned)
+- **GitOps**: ArgoCD (planned)
 
 ## Architecture
+
+### Current — Docker Compose on Tailscale Server
+```
+  Browser → nam.taild248f7.ts.net:3001
+              │
+        ┌─────┴──────┐
+        │   Nginx     │  (frontend container)
+        │   :80       │
+        └─────┬──────┘
+              │
+        ┌─────┴──────┐
+        │ /api → API  │  reverse proxy to app:4000
+        │ /    → SPA  │  serves static React build
+        └─────┬──────┘
+              │
+        api (Express:4000)
+              │
+        MongoDB:27017
+              │
+        mongo-data volume (persistent)
+```
+
+### Planned — Kubernetes (Linode LKE / AWS EKS)
 ```
   Browser → learndevops.site (HTTPS)
               │
@@ -17,45 +42,96 @@ A production-grade two-service application showcasing end-to-end DevOps practice
         │ Ingress     │  cert-manager  (Helm) — auto TLS via Let's Encrypt
         └─────┬──────┘
               │
-        ┌─────┴──────┐
-        │ /api → API  │  api-ingress  (rewrite-target strips /api prefix)
-        │ /    → FE   │  frontend-ingress
-        └─────┬──────┘
      ┌────────┴────────┐
      │                 │
   api-service     frontend-service
   (Express:4000)  (Nginx:80 → static)
      │
+  MongoDB (managed or StatefulSet)
+     │
   Prometheus ──→ Grafana
   kube-prometheus-stack (Helm)
+     │
+  ArgoCD (GitOps — watches this repo)
 ```
 
 ## Repository Structure
 | Path | Description |
 |------|-------------|
-| `api/` | Express backend — `/health` endpoint, multi-stage Dockerfile |
+| `api/` | Express backend — JWT auth, health endpoint, multi-stage Dockerfile |
 | `myblog/` | React frontend — multi-stage Dockerfile (dev → build → Nginx) |
+| `docker-compose.yaml` | Production compose template (used by deploy workflow) |
+| `docker-compose.dev.yaml` | Local development with hot-reloading |
+| `.github/workflows/deploy-server.yml` | CI/CD pipeline → Docker Hub → Tailscale server |
+| `.github/workflows/ci.yml.disabled` | Full CI pipeline with Trivy scans (for K8s deployment later) |
 | `k8s/` | Kubernetes manifests (api, frontend, ingress, cert-manager) |
 | `helm/` | Helm values files (ingress-nginx, cert-manager, monitoring) |
-| `terraform/` | Linode LKE cluster provisioning (IaC) |
-| `.github/workflows/ci.yml` | Full CI/CD pipeline |
+| `terraform/linode/` | Linode LKE cluster provisioning (IaC) |
+| `terraform/aws/` | AWS EKS provisioning (planned) |
 
 ## Local Development
 ```bash
-docker compose up --build
-```
-- Frontend: http://localhost:3000
-- API: http://localhost:4000
+# Start all services with hot-reloading
+docker compose -f docker-compose.dev.yaml up --build
 
-## Build Production Images
+# Frontend: http://localhost:3000
+# API:      http://localhost:4000
+# MongoDB:  localhost:27017
+```
+
+## Build Production Images Locally
 ```bash
-docker build --target production -t myjs-app:prod ./api
-docker build --target production -t myblog-app:prod ./myblog
+docker build --target production -t elorm116/myjs-app:local ./api
+docker build --target production -t elorm116/myreact-app:local ./myblog
 ```
 
-## Deploy to Kubernetes
+## Deploy to Tailscale Server (Current)
 
-### 1. Provision cluster
+The deploy-server.yml workflow handles everything automatically:
+
+1. Go to **GitHub → Actions → Deploy to Server (Docker Hub)**
+2. Click **Run workflow**
+3. Optionally enter a version tag (e.g. `v1.0.0`)
+4. The workflow builds → pushes to Docker Hub → SSHs into the server → deploys
+
+### Versioning
+```bash
+# Tag a release
+git tag v1.0.1
+git push origin main --tags
+
+# Then trigger the deploy workflow with version: v1.0.1
+# Images get tagged: sha-abc1234, 1.0.1, 1.0, latest
+```
+
+| Change type | Bump | Example |
+|---|---|---|
+| Bug fix, CSS tweak | Patch | `v1.0.0` → `v1.0.1` |
+| New feature | Minor | `v1.0.1` → `v1.1.0` |
+| Breaking change | Major | `v1.1.0` → `v2.0.0` |
+
+### Required GitHub Secrets
+| Secret | Purpose |
+|--------|---------|
+| `DOCKERHUB_TOKEN` | Docker Hub access token |
+| `JWT_SECRET` | JWT signing secret for the API |
+| `SERVER_SSH_KEY` | Ed25519 private key for SSH to the server |
+| `SERVER_FINGERPRINT` | SSH host fingerprint of the server |
+| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (for GitHub Actions to join tailnet) |
+| `TS_OAUTH_SECRET` | Tailscale OAuth secret |
+
+## CI/CD Pipeline
+On manual trigger (workflow_dispatch):
+1. **Build** — multi-platform Docker images (amd64 + arm64)
+2. **Tag** — SHA tag + semver tags + latest
+3. **Push** — to Docker Hub (`elorm116/mjs-app`, `elorm116/myreact-app`)
+4. **Connect** — join Tailscale network via OAuth
+5. **Deploy** — SSH into server, pull images, pin to digest, docker compose up
+6. **Rollback** — automatic rollback if deploy fails
+
+## Planned: Deploy to Kubernetes
+
+### Linode LKE
 ```bash
 export TF_VAR_linode_token="your-token"
 cd terraform/linode && terraform init && terraform apply
@@ -63,9 +139,9 @@ terraform output -raw kubeconfig | base64 -d > lke-config.yaml
 export KUBECONFIG=$PWD/lke-config.yaml
 ```
 
-### 2. Install infrastructure with Helm
+### Install Infrastructure with Helm
 ```bash
-# Monitoring (provides Prometheus, Grafana, and CRDs for ServiceMonitor)
+# Monitoring
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --repo https://prometheus-community.github.io/helm-charts \
   --namespace monitoring --create-namespace \
@@ -84,53 +160,52 @@ helm upgrade --install cert-manager cert-manager \
   --set crds.enabled=true \
   -f helm/cert-manager-values.yaml --wait
 
-# Apply ClusterIssuers for Let's Encrypt
 kubectl apply -f k8s/cert-manager.yaml
 ```
 
-### 3. Deploy app
+### Deploy App to K8s
 ```bash
 kubectl apply -f k8s/api.yaml -f k8s/frontend.yaml -f k8s/ingress.yaml
 ```
 
-### 4. DNS
+### DNS
 Point your domain's A record to the ingress-nginx LoadBalancer IP:
 ```bash
-kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+kubectl get svc -n ingress-nginx ingress-nginx-controller \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
 
-## CI/CD Pipeline
-On push to `main` or PR:
-1. **Frontend quality** – npm ci, test, build, audit (advisory)
-2. **API quality** – npm ci, audit (production deps only)
-3. **Docker build** – multi-platform (amd64 + arm64), push to GHCR
-4. **Trivy scan** – CVE scanning, SARIF upload to GitHub Security tab
-5. **Report** – summary table in GitHub Actions
-6. **Deploy** *(main only)* – rolling update to LKE via `kubectl set image`
+## Planned: GitOps with ArgoCD
+```bash
+# Install ArgoCD
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-### Required GitHub Secrets
-| Secret | Purpose |
-|--------|---------|
-| `KUBE_CONFIG` | Base64-encoded kubeconfig for LKE cluster |
-| `GITHUB_TOKEN` | Auto-provided, used for GHCR login |
+# ArgoCD will watch this repo's k8s/ directory
+# Any push to main auto-syncs to the cluster
+```
 
-## Observability
-- **kube-prometheus-stack** (Helm) provides Prometheus, Grafana, Alertmanager, node-exporter, and kube-state-metrics
-- API pods are scraped via Prometheus annotations (`prometheus.io/scrape`)
+## Observability (K8s)
+- **kube-prometheus-stack** provides Prometheus, Grafana, Alertmanager, node-exporter, kube-state-metrics
+- API pods scraped via Prometheus annotations (`prometheus.io/scrape`)
 - ingress-nginx exports metrics via ServiceMonitor
 - Access Grafana: `kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80`
-- Default login: admin / admin
 
 ## DevOps Practices Demonstrated
-- Multi-stage Docker builds (dev / prod separation)
+- Multi-stage Docker builds (development / production separation)
 - Non-root container user (`node`)
-- Health-based startup ordering (Docker Compose `depends_on`)
-- Kubernetes readiness / liveness probes + resource limits
-- Split Ingress design (API rewrite vs frontend passthrough)
-- Automated TLS via cert-manager + Let's Encrypt HTTP-01
-- Helm-managed infrastructure (ingress-nginx, cert-manager, monitoring)
+- OCI image labels for provenance tracking
+- Semantic versioning with automated tag strategy
+- Health-based startup ordering (Docker Compose `depends_on` + `healthcheck`)
+- Immutable deployments via digest pinning
+- Automatic rollback on failed deployments
 - Environment-driven configuration (no hardcoded secrets)
 - Infrastructure as Code with Terraform
-- CI quality gates + Trivy security scanning (SARIF → GitHub Security)
-- Continuous Deployment with rolling updates
-- Prometheus + Grafana observability
+- Tailscale mesh networking for secure server access
+- *(Planned)* Kubernetes readiness/liveness probes + resource limits
+- *(Planned)* Split Ingress design (API rewrite vs frontend passthrough)
+- *(Planned)* Automated TLS via cert-manager + Let's Encrypt
+- *(Planned)* Helm-managed infrastructure
+- *(Planned)* GitOps with ArgoCD
+- *(Planned)* CI quality gates + Trivy security scanning
+- *(Planned)* Prometheus + Grafana observability
