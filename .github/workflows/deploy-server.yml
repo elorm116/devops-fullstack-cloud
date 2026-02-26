@@ -227,7 +227,7 @@ services:
     container_name: grafana
     restart: unless-stopped
     ports:
-      - "${GRAFANA_PORT}:3002"
+      - "${GRAFANA_PORT}:3000"
     volumes:
       - ./monitoring/grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./monitoring/grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
