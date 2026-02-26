@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const User = require('./models/User');
 const Post = require('./models/Post');
 const auth = require('./middleware/auth');
+const client = require('prom-client');
 
 const app = express();
 app.use(express.json());
@@ -21,6 +22,37 @@ mongoose
     console.error('DB connection error:', err.message);
     process.exit(1);
   });
+
+// Enable default metrics
+client.collectDefaultMetrics();
+
+// Custom metric: HTTP request duration histogram
+const httpRequestDurationMicroseconds = new client.Histogram({
+  name: 'http_request_duration_ms',
+  help: 'Duration of HTTP requests in ms',
+  labelNames: ['method', 'route', 'code'],
+  buckets: [50, 100, 200, 300, 400, 500, 750, 1000, 2000],
+});
+
+// Middleware to measure request duration
+app.use((req, res, next) => {
+  const end = httpRequestDurationMicroseconds.startTimer();
+  res.on('finish', () => {
+    const route = req.route ? req.route.path : 'unknown_route';
+    end({ route, code: res.statusCode, method: req.method });
+  });
+  next();
+});
+
+// --- METRICS ENDPOINT (scraped by Prometheus) ---
+app.get('/metrics', async (_req, res) => {
+  try {
+    res.set('Content-Type', client.register.contentType);
+    res.end(await client.register.metrics());
+  } catch (e) {
+    res.status(500).end(e.message);
+  }
+});
 
 // --- HEALTH CHECK (used by Docker Compose healthcheck) ---
 app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
