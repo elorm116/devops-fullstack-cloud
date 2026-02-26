@@ -16,6 +16,7 @@ env:
   SERVER_USER: nam
   SERVER_DIR: ~/dockerize
   FRONTEND_PORT: "3001"
+  GRAFANA_PORT: "3002"
 
 jobs:
   build-and-deploy:
@@ -29,26 +30,24 @@ jobs:
           VERSION="${{ github.event.inputs.version }}"
           BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Primary tag: sha-based for traceability
           API_TAGS="${{ env.DOCKERHUB_USER }}/myjs-app:sha-${SHORT_SHA},${{ env.DOCKERHUB_USER }}/myjs-app:latest"
           FE_TAGS="${{ env.DOCKERHUB_USER }}/myreact-app:sha-${SHORT_SHA},${{ env.DOCKERHUB_USER }}/myreact-app:latest"
 
-          # If a version tag was provided, add semver tags (v1.2.0 → 1.2.0 + 1.2)
           if [[ -n "$VERSION" ]]; then
-            SEMVER="${VERSION#v}"           # strip leading 'v'
-            MINOR="${SEMVER%.*}"            # 1.2.0 → 1.2
+            SEMVER="${VERSION#v}"
+            MINOR="${SEMVER%.*}"
             API_TAGS="${API_TAGS},${{ env.DOCKERHUB_USER }}/myjs-app:${SEMVER},${{ env.DOCKERHUB_USER }}/myjs-app:${MINOR}"
             FE_TAGS="${FE_TAGS},${{ env.DOCKERHUB_USER }}/myreact-app:${SEMVER},${{ env.DOCKERHUB_USER }}/myreact-app:${MINOR}"
           fi
 
-          echo "short=$SHORT_SHA"         >> "$GITHUB_OUTPUT"
-          echo "full_sha=$FULL_SHA"       >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION:-sha-$SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "build_date=$BUILD_DATE"   >> "$GITHUB_OUTPUT"
-          echo "api_image=${{ env.DOCKERHUB_USER }}/myjs-app:sha-$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "frontend_image=${{ env.DOCKERHUB_USER }}/myreact-app:sha-$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "api_tags=$API_TAGS"       >> "$GITHUB_OUTPUT"
-          echo "fe_tags=$FE_TAGS"         >> "$GITHUB_OUTPUT"
+          echo "short=$SHORT_SHA"                                >> "$GITHUB_OUTPUT"
+          echo "full_sha=$FULL_SHA"                              >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION:-sha-$SHORT_SHA}"              >> "$GITHUB_OUTPUT"
+          echo "build_date=$BUILD_DATE"                          >> "$GITHUB_OUTPUT"
+          echo "api_image=${{ env.DOCKERHUB_USER }}/myjs-app:sha-$SHORT_SHA"          >> "$GITHUB_OUTPUT"
+          echo "frontend_image=${{ env.DOCKERHUB_USER }}/myreact-app:sha-$SHORT_SHA"  >> "$GITHUB_OUTPUT"
+          echo "api_tags=$API_TAGS"                              >> "$GITHUB_OUTPUT"
+          echo "fe_tags=$FE_TAGS"                                >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
 
@@ -101,111 +100,165 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Deploy via SSH
+      - name: Setup SSH
         env:
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
           SERVER_FINGERPRINT: ${{ secrets.SERVER_FINGERPRINT }}
-          API_IMAGE: ${{ steps.meta.outputs.api_image }}
-          FRONTEND_IMAGE: ${{ steps.meta.outputs.frontend_image }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-
-          # Use stored fingerprint instead of blind ssh-keyscan
           printf '%s\n' "$SERVER_FINGERPRINT" >> ~/.ssh/known_hosts
 
+      - name: Copy monitoring configs to server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "$SERVER_USER@$SERVER_HOST" "mkdir -p $SERVER_DIR"
+          scp -r -i ~/.ssh/id_ed25519 ./monitoring "$SERVER_USER@$SERVER_HOST:$SERVER_DIR/"
+
+      - name: Deploy via SSH
+        env:
+          API_IMAGE: ${{ steps.meta.outputs.api_image }}
+          FRONTEND_IMAGE: ${{ steps.meta.outputs.frontend_image }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          GRAFANA_ADMIN_USER: ${{ secrets.GRAFANA_ADMIN_USER }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+        run: |
           ssh -i ~/.ssh/id_ed25519 "$SERVER_USER@$SERVER_HOST" \
             API_IMAGE="$API_IMAGE" \
             FRONTEND_IMAGE="$FRONTEND_IMAGE" \
             SERVER_DIR="$SERVER_DIR" \
             FRONTEND_PORT="$FRONTEND_PORT" \
+            GRAFANA_PORT="$GRAFANA_PORT" \
             DOCKERHUB_USER="$DOCKERHUB_USER" \
             DOCKERHUB_TOKEN="$DOCKERHUB_TOKEN" \
             JWT_SECRET="$JWT_SECRET" \
+            GRAFANA_ADMIN_USER="$GRAFANA_ADMIN_USER" \
+            GRAFANA_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD" \
             bash -s <<'EOSSH'
-          set -euo pipefail
+set -euo pipefail
 
-          # Login to Docker Hub on server to avoid anonymous rate limits
-          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
+# Fail loudly if critical secrets are missing
+: "${JWT_SECRET:?JWT_SECRET is not set}"
+: "${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is not set}"
+: "${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is not set}"
 
-          mkdir -p "$SERVER_DIR" && cd "$SERVER_DIR"
+# Login to Docker Hub to avoid anonymous rate limits
+echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
 
-          # Pull new images
-          docker pull "$API_IMAGE"
-          docker pull "$FRONTEND_IMAGE"
+mkdir -p "$SERVER_DIR" && cd "$SERVER_DIR"
 
-          # Pin to digests for immutability
-          API_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$API_IMAGE")
-          FRONTEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$FRONTEND_IMAGE")
+# Pull new images
+docker pull "$API_IMAGE"
+docker pull "$FRONTEND_IMAGE"
 
-          # Backup current compose file for rollback
-          [ -f docker-compose.prod.yaml ] && cp docker-compose.prod.yaml docker-compose.prod.yaml.bak
+# Pin to digests for immutability
+API_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$API_IMAGE")
+FRONTEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$FRONTEND_IMAGE")
 
-          cat > docker-compose.prod.yaml << EOF
-          services:
-            db:
-              image: mongo:7
-              container_name: mongodb
-              restart: unless-stopped
-              volumes:
-                - mongo-data:/data/db
-              networks:
-                - blog-network
+# Backup current compose file for rollback
+[ -f docker-compose.prod.yaml ] && cp docker-compose.prod.yaml docker-compose.prod.yaml.bak
 
-            app:
-              image: ${API_DIGEST}
-              container_name: myjs-app
-              restart: unless-stopped
-              environment:
-                - NODE_ENV=production
-                - PORT=4000
-                - MONGO_URI=mongodb://db:27017/blog
-                - JWT_SECRET=${JWT_SECRET}
-              expose:
-                - "4000"
-              depends_on:
-                db:
-                  condition: service_started
-              healthcheck:
-                test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health >/dev/null || exit 1"]
-                interval: 10s
-                timeout: 3s
-                retries: 3
-                start_period: 15s
-              networks:
-                - blog-network
+cat > docker-compose.prod.yaml << EOF
+services:
+  db:
+    image: mongo:7.0
+    container_name: mongodb
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - blog-network
 
-            myblog:
-              image: ${FRONTEND_DIGEST}
-              container_name: myreact-app
-              restart: unless-stopped
-              ports:
-                - "${FRONTEND_PORT}:80"
-              depends_on:
-                app:
-                  condition: service_healthy
-              networks:
-                - blog-network
+  app:
+    image: ${API_DIGEST}
+    container_name: myjs-app
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - MONGO_URI=mongodb://db:27017/blog
+      - JWT_SECRET=${JWT_SECRET}
+    expose:
+      - "4000"
+    depends_on:
+      db:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    networks:
+      - blog-network
 
-          volumes:
-            mongo-data:
+  myblog:
+    image: ${FRONTEND_DIGEST}
+    container_name: myreact-app
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT}:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - blog-network
 
-          networks:
-            blog-network:
-              driver: bridge
-          EOF
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - blog-network
 
-          # Deploy, and rollback if it fails
-          if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans; then
-            echo "Deploy failed — rolling back..."
-            [ -f docker-compose.prod.yaml.bak ] && mv docker-compose.prod.yaml.bak docker-compose.prod.yaml
-            docker compose -f docker-compose.prod.yaml up -d --remove-orphans
-            exit 1
-          fi
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT}:3002"
+    volumes:
+      - ./monitoring/grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    networks:
+      - blog-network
 
-          # Cleanup old dangling images to free disk space
-          docker image prune -f
-          EOSSH
+volumes:
+  mongo-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  blog-network:
+    driver: bridge
+EOF
+
+# Deploy, and rollback if it fails
+if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans; then
+  echo "Deploy failed — rolling back..."
+  [ -f docker-compose.prod.yaml.bak ] && mv docker-compose.prod.yaml.bak docker-compose.prod.yaml
+  docker compose -f docker-compose.prod.yaml up -d --remove-orphans
+  exit 1
+fi
+
+# Cleanup old dangling images to free disk space
+docker image prune -f
+EOSSH
