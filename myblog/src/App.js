@@ -89,7 +89,7 @@ function App() {
           <>
             {profile && (
               <section className="profile-section" style={{ marginBottom: '2rem', padding: '1rem', backgroundColor: '#f9f9f9', borderRadius: '8px' }}>
-                <h3>Your Profile (Decrypted from Vault)</h3>
+                <h3>Your Profile</h3>
                 <p><strong>Username:</strong> {profile.username}</p>
                 <p><strong>Full Name:</strong> {profile.fullName || 'N/A'}</p>
                 <p><strong>Email:</strong> {profile.email || 'N/A'}</p>
