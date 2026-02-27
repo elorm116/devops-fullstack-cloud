@@ -35,6 +35,7 @@ services:
   vault:
     image: hashicorp/vault:1.16
     container_name: vault
+    user: "100:1000"
     restart: unless-stopped
     cap_add:
       - IPC_LOCK
