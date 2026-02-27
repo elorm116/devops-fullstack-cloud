@@ -158,6 +158,7 @@ set -euo pipefail
 : "${MONGO_ROOT_USER:?MONGO_ROOT_USER is not set}"
 : "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is not set}"
 : "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is not set}"
+
 # Vault creds are optional on first deploy (set after vault-init.sh)
 if [ -z "${VAULT_ROLE_ID:-}" ] || [ "$VAULT_ROLE_ID" = "placeholder" ]; then
   echo "⚠️  VAULT_ROLE_ID not set — Vault PII encryption will not work until configured."
