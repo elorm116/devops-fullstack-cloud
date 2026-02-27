@@ -24,6 +24,13 @@ CMD ["npm", "start"]
 
 # --- Stage 3: Build (Temporary stage to create static files) ---
 FROM base AS build
+
+ARG REACT_APP_GOOGLE_CLIENT_ID
+ARG REACT_APP_API_URL
+
+ENV REACT_APP_GOOGLE_CLIENT_ID=$REACT_APP_GOOGLE_CLIENT_ID
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
+
 # Clean install for a reliable build based on package-lock.json
 RUN npm ci
 
