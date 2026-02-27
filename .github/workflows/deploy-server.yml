@@ -149,198 +149,189 @@ jobs:
             MONGO_APP_PASSWORD="$MONGO_APP_PASSWORD" \
             CORS_ORIGIN="$CORS_ORIGIN" \
             bash -s << 'EOSSH'
-set -euo pipefail
+          set -euo pipefail
 
-# Fail loudly if critical secrets are missing
-: "${JWT_SECRET:?JWT_SECRET is not set}"
-: "${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is not set}"
-: "${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is not set}"
-: "${MONGO_ROOT_USER:?MONGO_ROOT_USER is not set}"
-: "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is not set}"
-: "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is not set}"
+          # Fail loudly if critical secrets are missing
+          : "${JWT_SECRET:?JWT_SECRET is not set}"
+          : "${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is not set}"
+          : "${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is not set}"
+          : "${MONGO_ROOT_USER:?MONGO_ROOT_USER is not set}"
+          : "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is not set}"
+          : "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is not set}"
 
-# Vault creds are optional on first deploy (set after vault-init.sh)
-if [ -z "${VAULT_ROLE_ID:-}" ] || [ "$VAULT_ROLE_ID" = "placeholder" ]; then
-  echo "⚠️  VAULT_ROLE_ID not set — Vault PII encryption will not work until configured."
-fi
+          # Vault creds are optional on first deploy
+          if [ -z "${VAULT_ROLE_ID:-}" ] || [ "$VAULT_ROLE_ID" = "placeholder" ]; then
+            echo "⚠️  VAULT_ROLE_ID not set — Vault features disabled."
+          fi
 
-# Login to Docker Hub to avoid anonymous rate limits
-echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
 
-mkdir -p "$SERVER_DIR" && cd "$SERVER_DIR"
+          mkdir -p "$SERVER_DIR" && cd "$SERVER_DIR"
 
-# Pull new images
-docker pull "$API_IMAGE"
-docker pull "$FRONTEND_IMAGE"
+          docker pull "$API_IMAGE"
+          docker pull "$FRONTEND_IMAGE"
 
-# Pin to digests for immutability
-API_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$API_IMAGE")
-FRONTEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$FRONTEND_IMAGE")
+          API_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$API_IMAGE")
+          FRONTEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$FRONTEND_IMAGE")
 
-# Backup current compose file for rollback
-[ -f docker-compose.prod.yaml ] && cp docker-compose.prod.yaml docker-compose.prod.yaml.bak
+          [ -f docker-compose.prod.yaml ] && cp docker-compose.prod.yaml docker-compose.prod.yaml.bak
 
-cat > docker-compose.prod.yaml << EOF
-services:
-  db:
-    image: mongo:7
-    container_name: mongodb
-    restart: unless-stopped
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
-      - MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD}
-    volumes:
-      - mongo-data:/data/db
-      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
-    networks:
-      - blog-network
+          cat > docker-compose.prod.yaml << EOF
+          services:
+            db:
+              image: mongo:7
+              container_name: mongodb
+              restart: unless-stopped
+              environment:
+                - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
+                - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+                - MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD}
+              volumes:
+                - mongo-data:/data/db
+                - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+              networks:
+                - blog-network
 
-  vault:
-    image: hashicorp/vault:1.16
-    container_name: vault
-    restart: unless-stopped
-    cap_add:
-      - IPC_LOCK
-    environment:
-      VAULT_LOCAL_CONFIG: >
-        {
-          "storage": { "file": { "path": "/vault/data" } },
-          "listener": [{ "tcp": { "address": "0.0.0.0:8200", "tls_disable": true } }],
-          "default_lease_ttl": "1h",
-          "max_lease_ttl": "4h",
-          "ui": false,
-          "log_level": "warn"
-        }
-    command: server
-    volumes:
-      - vault-data:/vault/data
-      - vault-audit:/vault/audit
-    expose:
-      - "8200"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/init || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
-    networks:
-      - blog-network
+            vault:
+              image: hashicorp/vault:1.16
+              container_name: vault
+              restart: unless-stopped
+              cap_add:
+                - IPC_LOCK
+              environment:
+                VAULT_LOCAL_CONFIG: |
+                  {
+                    "storage": { "file": { "path": "/vault/data" } },
+                    "listener": [{ "tcp": { "address": "0.0.0.0:8200", "tls_disable": true } }],
+                    "default_lease_ttl": "1h",
+                    "max_lease_ttl": "4h",
+                    "ui": false
+                  }
+              command: server
+              volumes:
+                - vault-data:/vault/data
+                - vault-audit:/vault/audit
+              expose:
+                - "8200"
+              healthcheck:
+                test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/init || exit 1"]
+                interval: 10s
+                timeout: 3s
+                retries: 5
+                start_period: 10s
+              networks:
+                - blog-network
 
-  app:
-    image: ${API_DIGEST}
-    container_name: api_container
-    restart: unless-stopped
-    environment:
-      - NODE_ENV=production
-      - PORT=4000
-      - MONGO_URI=mongodb://blogapi:${MONGO_APP_PASSWORD}@db:27017/blog?authSource=blog
-      - JWT_SECRET=${JWT_SECRET}
-      - CORS_ORIGIN=${CORS_ORIGIN:-}
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_ROLE_ID=${VAULT_ROLE_ID}
-      - VAULT_SECRET_ID=${VAULT_SECRET_ID}
-    expose:
-      - "4000"
-    depends_on:
-      db:
-        condition: service_started
-      vault:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health >/dev/null || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      start_period: 15s
-    networks:
-      - blog-network
+            app:
+              image: ${API_DIGEST}
+              container_name: api_container
+              restart: unless-stopped
+              environment:
+                - NODE_ENV=production
+                - PORT=4000
+                - MONGO_URI=mongodb://blogapi:${MONGO_APP_PASSWORD}@db:27017/blog?authSource=blog
+                - JWT_SECRET=${JWT_SECRET}
+                - CORS_ORIGIN=${CORS_ORIGIN}
+                - VAULT_ADDR=http://vault:8200
+                - VAULT_ROLE_ID=${VAULT_ROLE_ID}
+                - VAULT_SECRET_ID=${VAULT_SECRET_ID}
+              expose:
+                - "4000"
+              depends_on:
+                db:
+                  condition: service_started
+                vault:
+                  condition: service_healthy
+              healthcheck:
+                test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health >/dev/null || exit 1"]
+                interval: 10s
+                timeout: 3s
+                retries: 3
+                start_period: 15s
+              networks:
+                - blog-network
 
-  myblog:
-    image: ${FRONTEND_DIGEST}
-    container_name: myblog_container
-    restart: unless-stopped
-    ports:
-      - "${FRONTEND_PORT}:80"
-    depends_on:
-      app:
-        condition: service_healthy
-    networks:
-      - blog-network
+            myblog:
+              image: ${FRONTEND_DIGEST}
+              container_name: myblog_container
+              restart: unless-stopped
+              ports:
+                - "${FRONTEND_PORT}:80"
+              depends_on:
+                app:
+                  condition: service_healthy
+              networks:
+                - blog-network
 
-  prometheus:
-    image: prom/prometheus:v2.51.0
-    container_name: prometheus
-    restart: unless-stopped
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=15d'
-    depends_on:
-      app:
-        condition: service_healthy
-    networks:
-      - blog-network
+            prometheus:
+              image: prom/prometheus:v2.51.0
+              container_name: prometheus
+              restart: unless-stopped
+              volumes:
+                - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+                - prometheus-data:/prometheus
+              command:
+                - '--config.file=/etc/prometheus/prometheus.yml'
+                - '--storage.tsdb.path=/prometheus'
+                - '--storage.tsdb.retention.time=15d'
+              depends_on:
+                app:
+                  condition: service_healthy
+              networks:
+                - blog-network
 
-  grafana:
-    image: grafana/grafana:10.4.1
-    container_name: grafana
-    restart: unless-stopped
-    ports:
-      - "${GRAFANA_PORT}:3000"
-    volumes:
-      - ./monitoring/grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./monitoring/grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - grafana-data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-    depends_on:
-      - prometheus
-    networks:
-      - blog-network
+            grafana:
+              image: grafana/grafana:10.4.1
+              container_name: grafana
+              restart: unless-stopped
+              ports:
+                - "${GRAFANA_PORT}:3000"
+              volumes:
+                - ./monitoring/grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+                - ./monitoring/grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+                - grafana-data:/var/lib/grafana
+              environment:
+                - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+                - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+                - GF_USERS_ALLOW_SIGN_UP=false
+              depends_on:
+                - prometheus
+              networks:
+                - blog-network
 
-volumes:
-  mongo-data:
-  vault-data:
-  vault-audit:
-  prometheus-data:
-  grafana-data:
+          volumes:
+            mongo-data:
+            vault-data:
+            vault-audit:
+            prometheus-data:
+            grafana-data:
 
-networks:
-  blog-network:
-    driver: bridge
-EOF
+          networks:
+            blog-network:
+              driver: bridge
+          EOF
 
-# Deploy, and rollback if it fails
-if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans; then
-  echo "Deploy failed — rolling back..."
-  [ -f docker-compose.prod.yaml.bak ] && mv docker-compose.prod.yaml.bak docker-compose.prod.yaml
-  docker compose -f docker-compose.prod.yaml up -d --remove-orphans
-  exit 1
-fi
+          if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans; then
+            echo "Deploy failed — rolling back..."
+            [ -f docker-compose.prod.yaml.bak ] && mv docker-compose.prod.yaml.bak docker-compose.prod.yaml
+            docker compose -f docker-compose.prod.yaml up -d --remove-orphans
+            exit 1
+          fi
 
-# ─── Vault status check ───────────────────────────────────────────────────────
-VAULT_STATUS=$(docker exec vault wget -qO- http://127.0.0.1:8200/v1/sys/seal-status 2>/dev/null || echo '{}')
-INITIALIZED=$(echo "$VAULT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('initialized', False))" 2>/dev/null || echo "False")
-SEALED=$(echo "$VAULT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sealed', True))" 2>/dev/null || echo "True")
+          VAULT_STATUS=$(docker exec vault wget -qO- http://127.0.0.1:8200/v1/sys/seal-status 2>/dev/null || echo '{}')
+          INITIALIZED=$(echo "$VAULT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('initialized', False))" 2>/dev/null || echo "False")
+          SEALED=$(echo "$VAULT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sealed', True))" 2>/dev/null || echo "True")
 
-echo ""
-if [ "$INITIALIZED" = "False" ]; then
-  echo "⚠️  Vault is NOT initialized."
-  echo "   SSH in and run: cd $SERVER_DIR && bash scripts/vault-init.sh"
-  echo "   Then add VAULT_ROLE_ID and VAULT_SECRET_ID to GitHub secrets and redeploy."
-elif [ "$SEALED" = "True" ]; then
-  echo "⚠️  Vault is sealed (normal after a server restart)."
-  echo "   SSH in and run: cd $SERVER_DIR && bash scripts/vault-unseal.sh"
-else
-  echo "✅ Vault is initialized and unsealed."
-fi
+          echo ""
+          if [ "$INITIALIZED" = "False" ]; then
+            echo "⚠️  Vault is NOT initialized."
+            echo "   SSH in and run: cd $SERVER_DIR && bash scripts/vault-init.sh"
+          elif [ "$SEALED" = "True" ]; then
+            echo "⚠️  Vault is sealed."
+            echo "   SSH in and run: cd $SERVER_DIR && bash scripts/vault-unseal.sh"
+          else
+            echo "✅ Vault is initialized and unsealed."
+          fi
 
-# Cleanup old dangling images to free disk space
-docker image prune -f
-EOSSH
+          docker image prune -f
+          EOSSH
