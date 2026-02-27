@@ -3,10 +3,32 @@ const { encryptPII, decryptPII } = require('../services/piiEncryption');
 
 const UserSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  email: { type: String },
-  fullName: { type: String },
+
+  // Null for Google SSO users — they have no password
+  password: { type: String, default: null },
+
+  // PII fields — encrypted via Vault Transit before saving
+  email:    { type: String, default: null },
+  fullName: { type: String, default: null },
+
+  // OAuth fields — only set for Google SSO users
+  googleId: { type: String, default: null },
+  picture:  { type: String, default: null },
+
+  // How the account was created
+  authProvider: {
+    type: String,
+    enum: ['local', 'google'],
+    default: 'local',
+  },
+
+  createdAt: { type: Date, default: Date.now },
 });
+
+// Index for fast Google ID lookup
+UserSchema.index({ googleId: 1 }, { sparse: true });
+
+// ─── Vault PII encryption hooks ──────────────────────────────────────────────
 
 // Encrypt PII before saving
 UserSchema.pre('save', async function () {

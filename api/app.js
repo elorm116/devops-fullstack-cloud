@@ -11,6 +11,7 @@ const Post = require('./models/Post');
 const auth = require('./middleware/auth');
 const client = require('prom-client');
 const { getVaultClient } = require('./services/vault');
+const { verifyGoogleToken } = require('./services/oauth');
 
 const app = express();
 
@@ -43,6 +44,15 @@ const authLimiter = rateLimit({
   message: { message: 'Too many auth attempts, please try again later.' },
 });
 
+// ─── Internal-only middleware ────────────────────────────────────────────────
+const internalOnly = (req, res, next) => {
+  const ip = req.ip || req.connection.remoteAddress;
+  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
+    return next();
+  }
+  return res.status(403).json({ message: 'Forbidden' });
+};
+
 // ─── Config ──────────────────────────────────────────────────────────────────
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/blog';
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -53,7 +63,7 @@ if (!JWT_SECRET) {
 
 mongoose
   .connect(MONGO_URI, {
-    serverSelectionTimeoutMS: 30000, // wait up to 30 s for MongoDB to become ready
+    serverSelectionTimeoutMS: 30000,
   })
   .then(() => console.log('DB Connected'))
   .catch((err) => {
@@ -99,7 +109,9 @@ const postSchema = Joi.object({
 });
 
 // ─── Health / Metrics ────────────────────────────────────────────────────────
-app.get('/metrics', async (_req, res) => {
+
+// Internal only — Prometheus scrapes this, should never be public
+app.get('/metrics', internalOnly, async (_req, res) => {
   try {
     res.set('Content-Type', client.register.contentType);
     res.end(await client.register.metrics());
@@ -108,9 +120,11 @@ app.get('/metrics', async (_req, res) => {
   }
 });
 
+// Public — used by Docker healthcheck
 app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
 
-app.get('/health/vault', async (_req, res) => {
+// Internal only — leaks infrastructure info
+app.get('/health/vault', internalOnly, async (_req, res) => {
   try {
     const vault = getVaultClient();
     const status = await vault.healthCheck();
@@ -133,7 +147,13 @@ app.post('/api/register', authLimiter, async (req, res) => {
       return res.status(409).json({ message: 'Username already taken' });
     }
     const hashedPassword = await bcrypt.hash(password, 12);
-    const user = new User({ username, password: hashedPassword, email, fullName });
+    const user = new User({
+      username,
+      password: hashedPassword,
+      email,
+      fullName,
+      authProvider: 'local',
+    });
     await user.save();
     res.status(201).json({ message: 'User registered' });
   } catch (e) {
@@ -149,6 +169,14 @@ app.post('/api/login', authLimiter, async (req, res) => {
 
     const { username, password } = value;
     const user = await User.findOne({ username });
+
+    // Prevent Google SSO users from logging in with a password
+    if (user && user.authProvider === 'google') {
+      return res.status(400).json({
+        message: 'This account uses Google Sign-In. Please use the Google button to log in.',
+      });
+    }
+
     if (user && (await bcrypt.compare(password, user.password))) {
       const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '7d' });
       res.json({ token, username: user.username });
@@ -161,11 +189,80 @@ app.post('/api/login', authLimiter, async (req, res) => {
   }
 });
 
+// ─── GOOGLE SSO ──────────────────────────────────────────────────────────────
+app.post('/api/auth/google', authLimiter, async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    if (!idToken) {
+      return res.status(400).json({ message: 'Google ID token is required' });
+    }
+
+    // Verify the token with Google
+    const googleUser = await verifyGoogleToken(idToken);
+    const { googleId, email, name, picture } = googleUser;
+
+    // Check if user already exists by Google ID
+    let user = await User.findOne({ googleId });
+
+    if (!user) {
+      // Check if a local account already has this email
+      const emailConflict = await User.findOne({ email });
+      if (emailConflict) {
+        return res.status(409).json({
+          message: 'An account with this email already exists. Please log in with your username and password.',
+        });
+      }
+
+      // Auto-create account — generate a unique username from their Google name
+      let baseUsername = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20) || 'user';
+      let username = baseUsername;
+      let suffix = 1;
+      while (await User.findOne({ username })) {
+        username = `${baseUsername}${suffix++}`;
+      }
+
+      user = new User({
+        username,
+        password: null,
+        email,
+        fullName: name,
+        googleId,
+        picture,
+        authProvider: 'google',
+      });
+      await user.save();
+      console.log(`[SSO] Auto-created Google account for ${email} as @${username}`);
+    }
+
+    // Issue your app's JWT — same as regular login from here on
+    const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, username: user.username });
+  } catch (e) {
+    console.error('Google SSO error:', e.message);
+    if (
+      e.message.includes('Invalid Google token') ||
+      e.message.includes('expired') ||
+      e.message.includes('audience')
+    ) {
+      return res.status(401).json({ message: 'Google authentication failed. Please try again.' });
+    }
+    res.status(500).json({ message: 'Google sign-in failed' });
+  }
+});
+
 app.get('/api/me', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userData.userId).select('-password');
     if (!user) return res.status(404).json({ message: 'User not found' });
-    res.json(user);
+
+    // Return only the fields the frontend needs
+    res.json({
+      username: user.username,
+      email: user.email || null,
+      fullName: user.fullName || null,
+      picture: user.picture || null,
+      authProvider: user.authProvider,
+    });
   } catch (e) {
     console.error('Get user error:', e.message);
     res.status(500).json({ message: 'Could not fetch user' });
@@ -209,7 +306,6 @@ app.delete('/api/posts/:id', auth, async (req, res) => {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: 'Post not found' });
 
-    // Only the author can delete their own post
     if (post.userId && post.userId.toString() !== req.userData.userId) {
       return res.status(403).json({ message: 'Not authorized to delete this post' });
     }
@@ -220,6 +316,17 @@ app.delete('/api/posts/:id', auth, async (req, res) => {
     console.error('Delete post error:', e.message);
     res.status(500).json({ message: 'Could not delete post' });
   }
+});
+
+// ─── 404 Handler ─────────────────────────────────────────────────────────────
+app.use((_req, res) => {
+  res.status(404).json({ message: 'Not found' });
+});
+
+// ─── Global Error Handler ────────────────────────────────────────────────────
+app.use((err, _req, res, _next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ message: 'Internal server error' });
 });
 
 // ─── Start Server ────────────────────────────────────────────────────────────

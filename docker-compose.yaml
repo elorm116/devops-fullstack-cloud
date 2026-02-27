@@ -35,15 +35,15 @@ services:
           "listener": [{ "tcp": { "address": "0.0.0.0:8200", "tls_disable": true } }],
           "default_lease_ttl": "1h",
           "max_lease_ttl": "4h",
-          "ui": false,
+          "ui": true,
           "log_level": "warn"
         }
     command: server
     volumes:
       - vault-data:/vault/data
       - vault-audit:/vault/audit
-    expose:
-      - "8200"            # Internal only — not exposed to host
+    ports:
+      - "8200:8200"       # Expose Vault's port to host for local access
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/init || exit 1"]
       interval: 10s
@@ -69,6 +69,7 @@ services:
       - VAULT_ROLE_ID=${VAULT_ROLE_ID}
       - VAULT_SECRET_ID=${VAULT_SECRET_ID}
       - CORS_ORIGIN=${CORS_ORIGIN}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
     depends_on:
       - db
       - vault
