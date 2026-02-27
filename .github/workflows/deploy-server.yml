@@ -75,7 +75,6 @@ jobs:
             BUILD_DATE=${{ steps.meta.outputs.build_date }}
             VCS_REF=${{ steps.meta.outputs.full_sha }}
             VERSION=${{ steps.meta.outputs.version }}
-            REACT_APP_GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
