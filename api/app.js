@@ -52,7 +52,9 @@ if (!JWT_SECRET) {
 }
 
 mongoose
-  .connect(MONGO_URI)
+  .connect(MONGO_URI, {
+    serverSelectionTimeoutMS: 30000, // wait up to 30 s for MongoDB to become ready
+  })
   .then(() => console.log('DB Connected'))
   .catch((err) => {
     console.error('DB connection error:', err.message);

@@ -25,7 +25,7 @@ class VaultClient {
       this.tokenExpiry = Infinity; // Static token — never expires
       this.configured = true;
       console.log('[Vault] Using static VAULT_TOKEN (dev mode)');
-    } else if (this.roleId && this.secretId) {
+    } else if (this.roleId && this.secretId && this.roleId !== 'placeholder' && this.secretId !== 'placeholder') {
       this.token = null;
       this.configured = true;
       console.log('[Vault] Using AppRole auth (production mode)');
