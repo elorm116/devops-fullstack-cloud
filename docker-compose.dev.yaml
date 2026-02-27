@@ -1,5 +1,8 @@
-# Local development override — run with:
-#   docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up --build
+# Local development — run with:
+#   docker compose -f docker-compose.dev.yaml up --build
+#
+# After first startup, bootstrap Vault Transit engine:
+#   bash scripts/vault-dev-init.sh
 #
 # This builds images locally from source instead of pulling from Docker Hub,
 # and uses the development stage with hot-reloading.
@@ -9,10 +12,38 @@ services:
     image: mongo:7
     container_name: mongodb
     restart: unless-stopped
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=devRootPass123
+      - MONGO_APP_PASSWORD=devAppPass123
     volumes:
       - mongo-data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
     ports:
       - "27017:27017"
+    networks:
+      - blog-network
+
+  # Vault in dev mode — auto-initialized, auto-unsealed, never persisted
+  # DO NOT use dev mode in production (no persistence, single unseal key, not HA)
+  vault:
+    image: hashicorp/vault:1.16
+    container_name: vault
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=dev-root-token   # Static token for local dev only
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    command: server -dev
+    ports:
+      - "8200:8200"                               # Exposed so you can use the Vault CLI locally
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/init || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
     networks:
       - blog-network
 
@@ -28,14 +59,19 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=4000
-      - MONGO_URI=mongodb://db:27017/blog
+      - MONGO_URI=mongodb://blogapi:devAppPass123@db:27017/blog?authSource=blog
       - JWT_SECRET=local-dev-secret
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=dev-root-token                # Dev mode uses a static root token directly
+      - CORS_ORIGIN=http://localhost:3000
     volumes:
       - ./api:/app
       - /app/node_modules
     depends_on:
       db:
         condition: service_started
+      vault:
+        condition: service_healthy
     networks:
       - blog-network
 
@@ -60,6 +96,7 @@ services:
 
 volumes:
   mongo-data:
+  # No vault-data volume in dev — dev mode is intentionally ephemeral
 
 networks:
   blog-network:

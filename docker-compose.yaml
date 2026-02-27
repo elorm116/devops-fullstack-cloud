@@ -4,14 +4,51 @@ services:
     image: mongo:7
     container_name: mongodb
     restart: unless-stopped
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+      - MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD}
     volumes:
-      - mongo-data:/data/db # This is critical! It persists your blog posts.
+      - mongo-data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - blog-network
+
+  # SECRETS MANAGER
+  vault:
+    image: hashicorp/vault:1.16
+    container_name: vault
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK          # Prevents Vault secrets from being swapped to disk
+    environment:
+      VAULT_LOCAL_CONFIG: >
+        {
+          "storage": { "file": { "path": "/vault/data" } },
+          "listener": [{ "tcp": { "address": "0.0.0.0:8200", "tls_disable": true } }],
+          "default_lease_ttl": "1h",
+          "max_lease_ttl": "4h",
+          "ui": false,
+          "log_level": "warn"
+        }
+    command: server
+    volumes:
+      - vault-data:/vault/data
+      - vault-audit:/vault/audit
+    expose:
+      - "8200"            # Internal only — not exposed to host
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/init || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     networks:
       - blog-network
 
   # THE BACKEND API
   app:
-    image: ${API_DIGEST}  # Pinned digest from Docker Hub, set by deploy workflow
+    image: ${API_DIGEST}
     container_name: api_container
     restart: unless-stopped
     expose:
@@ -19,13 +56,19 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=4000
-      - MONGO_URI=mongodb://db:27017/blog
+      - MONGO_URI=mongodb://blogapi:${MONGO_APP_PASSWORD}@db:27017/blog?authSource=blog
       - JWT_SECRET=${JWT_SECRET}
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_ROLE_ID=${VAULT_ROLE_ID}
+      - VAULT_SECRET_ID=${VAULT_SECRET_ID}
+      - CORS_ORIGIN=${CORS_ORIGIN}
     depends_on:
       db:
         condition: service_started
+      vault:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -34,7 +77,7 @@ services:
 
   # THE FRONTEND
   myblog:
-    image: ${FRONTEND_DIGEST} 
+    image: ${FRONTEND_DIGEST}
     container_name: myblog_container
     restart: unless-stopped
     ports:
@@ -45,9 +88,10 @@ services:
     networks:
       - blog-network
 
-# Persistence for your blog data
 volumes:
   mongo-data:
+  vault-data:             # Persists Vault's initialized+sealed state across restarts
+  vault-audit:            # Persists Vault audit logs
 
 networks:
   blog-network:

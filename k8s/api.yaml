@@ -14,11 +14,19 @@ spec:
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "4000"
-        prometheus.io/path: "/health"
+        prometheus.io/path: "/metrics"
     spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
       containers:
       - name: api-container
-        image: ghcr.io/elorm116/devops-fullstack-cloud/api:latest
+        image: elorm116/myjs-app:latest
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop: ["ALL"]
         ports:
         - containerPort: 4000
         env:
@@ -26,6 +34,33 @@ spec:
           value: "4000"
         - name: NODE_ENV
           value: "production"
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: MONGO_URI
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: JWT_SECRET
+        - name: VAULT_ADDR
+          value: "http://vault:8200"
+        - name: VAULT_ROLE_ID
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: VAULT_ROLE_ID
+        - name: VAULT_SECRET_ID
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: VAULT_SECRET_ID
+        - name: CORS_ORIGIN
+          valueFrom:
+            secretKeyRef:
+              name: api-secrets
+              key: CORS_ORIGIN
         readinessProbe:
           httpGet:
             path: /health
@@ -45,8 +80,6 @@ spec:
           limits:
             cpu: 200m
             memory: 256Mi
-      imagePullSecrets:
-      - name: ghcr-auth
 ---
 apiVersion: v1
 kind: Service

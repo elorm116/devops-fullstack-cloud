@@ -13,6 +13,7 @@ function App() {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState(null);
 
   const fetchPosts = async () => {
     try {
@@ -26,9 +27,32 @@ function App() {
     }
   };
 
+  const fetchProfile = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_URL}/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setProfile(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch profile:', err);
+    }
+  };
+
   useEffect(() => {
     fetchPosts();
   }, []);
+
+  useEffect(() => {
+    if (user) {
+      fetchProfile();
+    } else {
+      setProfile(null);
+    }
+  }, [user, token]);
 
   const handlePost = async (e) => {
     e.preventDefault();
@@ -62,28 +86,38 @@ function App() {
         {!user ? (
           <LoginForm />
         ) : (
-          <section className="create-post">
-            <h2>Write a New Post</h2>
-            <form onSubmit={handlePost}>
-              <input
-                type="text"
-                placeholder="Post title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                required
-              />
-              <textarea
-                placeholder="What's on your mind?"
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                rows={5}
-                required
-              />
-              <button className="btn btn-primary" type="submit">
-                Publish
-              </button>
-            </form>
-          </section>
+          <>
+            {profile && (
+              <section className="profile-section" style={{ marginBottom: '2rem', padding: '1rem', backgroundColor: '#f9f9f9', borderRadius: '8px' }}>
+                <h3>Your Profile (Decrypted from Vault)</h3>
+                <p><strong>Username:</strong> {profile.username}</p>
+                <p><strong>Full Name:</strong> {profile.fullName || 'N/A'}</p>
+                <p><strong>Email:</strong> {profile.email || 'N/A'}</p>
+              </section>
+            )}
+            <section className="create-post">
+              <h2>Write a New Post</h2>
+              <form onSubmit={handlePost}>
+                <input
+                  type="text"
+                  placeholder="Post title"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  required
+                />
+                <textarea
+                  placeholder="What's on your mind?"
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  rows={5}
+                  required
+                />
+                <button className="btn btn-primary" type="submit">
+                  Publish
+                </button>
+              </form>
+            </section>
+          </>
         )}
 
         <section className="posts-section">

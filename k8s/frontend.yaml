@@ -12,9 +12,16 @@ spec:
       labels:
         app: frontend
     spec:
+      securityContext:
+        runAsNonRoot: false       # nginx requires root to bind port 80
       containers:
       - name: frontend-container
-        image: ghcr.io/elorm116/devops-fullstack-cloud/frontend:latest
+        image: elorm116/myreact-app:latest
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+            add: ["NET_BIND_SERVICE"]
         ports:
         - containerPort: 80
         readinessProbe:
@@ -36,8 +43,6 @@ spec:
           limits:
             cpu: 200m
             memory: 128Mi
-      imagePullSecrets:
-      - name: ghcr-auth
 ---
 apiVersion: v1
 kind: Service

@@ -3,6 +3,7 @@
 A production-grade blog application showcasing end-to-end DevOps practices — from local development through CI/CD to production deployment.
 
 - **API**: Node.js/Express backend with JWT auth, health checks, MongoDB
+- **Security**: HashiCorp Vault for PII encryption (Transit Secrets Engine)
 - **Frontend**: React SPA → Nginx multi-stage build
 - **CI/CD**: GitHub Actions → build, scan, push to Docker Hub, deploy via SSH
 - **Infrastructure**: Docker Compose on Tailscale server (current), Kubernetes on Linode/AWS (planned)
@@ -27,7 +28,9 @@ A production-grade blog application showcasing end-to-end DevOps practices — f
         └─────┬──────┘
               │
         api (Express:4000)
-              │
+         │      │
+         │      └──→ Vault:8200 (Transit Secrets Engine)
+         │
         MongoDB:27017
               │
         mongo-data volume (persistent)
@@ -72,10 +75,14 @@ A production-grade blog application showcasing end-to-end DevOps practices — f
 ## Local Development
 ```bash
 # Start all services with hot-reloading
-docker compose -f docker-compose.dev.yaml up --build
+docker compose -f docker-compose.dev.yaml up --build -d
+
+# Bootstrap Vault Transit engine for local dev
+bash scripts/vault-dev-init.sh
 
 # Frontend: http://localhost:3000
 # API:      http://localhost:4000
+# Vault:    http://localhost:8200
 # MongoDB:  localhost:27017
 ```
 

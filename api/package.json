@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon -L app.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "vault:rewrap": "node scripts/vault-rewrap.js"
   },
   "author": "",
   "license": "ISC",
@@ -14,6 +15,9 @@
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "express": "^4.17.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.0",
     "mongoose": "^7.6.3",
     "prom-client": "^15.1.3"

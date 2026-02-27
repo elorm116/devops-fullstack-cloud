@@ -1,0 +1,58 @@
+# k8s/network-policy.yaml
+# Default deny all ingress — only allow explicitly defined traffic.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Allow ingress traffic to the frontend from anywhere (public-facing)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-ingress
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 80
+          protocol: TCP
+---
+# Allow API to receive traffic only from frontend pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-from-frontend
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - port: 4000
+          protocol: TCP
+    # Also allow from Prometheus for scraping /metrics
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - port: 4000
+          protocol: TCP
