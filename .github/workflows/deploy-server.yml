@@ -148,7 +148,7 @@ jobs:
             MONGO_ROOT_PASSWORD="$MONGO_ROOT_PASSWORD" \
             MONGO_APP_PASSWORD="$MONGO_APP_PASSWORD" \
             CORS_ORIGIN="$CORS_ORIGIN" \
-            bash -s <<'EOSSH'
+            bash -s << 'EOSSH'
 set -euo pipefail
 
 # Fail loudly if critical secrets are missing
