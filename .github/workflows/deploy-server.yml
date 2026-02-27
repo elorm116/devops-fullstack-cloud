@@ -329,7 +329,8 @@ jobs:
           echo "✅ MongoDB is ready"
 
           # Ensure the blogapi app user exists (idempotent — safe to run every deploy)
-          docker exec mongodb mongosh \
+          # Try with root auth first; if that fails (legacy volume without auth), try without auth
+          if ! docker exec mongodb mongosh \
             -u "${MONGO_ROOT_USER}" -p "${MONGO_ROOT_PASSWORD}" \
             --authenticationDatabase admin --quiet --eval "
               const blog = db.getSiblingDB('blog');
@@ -340,7 +341,17 @@ jobs:
               } else {
                 print('ℹ️  blogapi user already exists');
               }
+            " 2>/dev/null; then
+            echo "⚠️  Root auth failed — trying without auth (legacy volume)..."
+            docker exec mongodb mongosh --quiet --eval "
+              const admin = db.getSiblingDB('admin');
+              admin.createUser({ user: '${MONGO_ROOT_USER}', pwd: '${MONGO_ROOT_PASSWORD}', roles: ['root'] });
+              print('✅ Created root user on legacy volume');
+              const blog = db.getSiblingDB('blog');
+              blog.createUser({ user: 'blogapi', pwd: '${MONGO_APP_PASSWORD}', roles: [{ role: 'readWrite', db: 'blog' }] });
+              print('✅ Created blogapi user');
             "
+          fi
 
           # ── Step 2: Bring up all remaining services ──
           if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans; then
