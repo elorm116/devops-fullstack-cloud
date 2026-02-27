@@ -244,10 +244,8 @@ jobs:
               expose:
                 - "4000"
               depends_on:
-                db:
-                  condition: service_healthy
-                vault:
-                  condition: service_healthy
+                - db
+                - vault
               healthcheck:
                 test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health >/dev/null || exit 1"]
                 interval: 10s
@@ -264,8 +262,7 @@ jobs:
               ports:
                 - "${FRONTEND_PORT}:80"
               depends_on:
-                app:
-                  condition: service_healthy
+                - app
               networks:
                 - blog-network
 
@@ -281,8 +278,7 @@ jobs:
                 - '--storage.tsdb.path=/prometheus'
                 - '--storage.tsdb.retention.time=15d'
               depends_on:
-                app:
-                  condition: service_healthy
+                - app
               networks:
                 - blog-network
 
@@ -317,8 +313,45 @@ jobs:
               driver: bridge
           EOF
 
+          # ── Step 1: Bring up MongoDB first and ensure blogapi user exists ──
+          docker compose -f docker-compose.prod.yaml up -d db
+          echo "⏳ Waiting for MongoDB healthcheck..."
+          RETRIES=0
+          until docker exec mongodb mongosh --quiet --eval "db.adminCommand('ping')" >/dev/null 2>&1; do
+            RETRIES=$((RETRIES + 1))
+            if [ "$RETRIES" -ge 30 ]; then
+              echo "❌ MongoDB did not become ready in time"
+              docker logs mongodb 2>&1 | tail -30
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "✅ MongoDB is ready"
+
+          # Ensure the blogapi app user exists (idempotent — safe to run every deploy)
+          docker exec mongodb mongosh \
+            -u "${MONGO_ROOT_USER}" -p "${MONGO_ROOT_PASSWORD}" \
+            --authenticationDatabase admin --quiet --eval "
+              const blog = db.getSiblingDB('blog');
+              const existing = blog.getUsers().users.find(u => u.user === 'blogapi');
+              if (!existing) {
+                blog.createUser({ user: 'blogapi', pwd: '${MONGO_APP_PASSWORD}', roles: [{ role: 'readWrite', db: 'blog' }] });
+                print('✅ Created blogapi user');
+              } else {
+                print('ℹ️  blogapi user already exists');
+              }
+            "
+
+          # ── Step 2: Bring up all remaining services ──
           if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans; then
-            echo "Deploy failed — rolling back..."
+            echo "Deploy failed — capturing diagnostics..."
+            echo "--- api_container logs ---"
+            docker logs api_container 2>&1 | tail -50 || true
+            echo "--- mongodb logs ---"
+            docker logs mongodb 2>&1 | tail -20 || true
+            echo "--- vault logs ---"
+            docker logs vault 2>&1 | tail -20 || true
+            echo "--- Rolling back ---"
             [ -f docker-compose.prod.yaml.bak ] && mv docker-compose.prod.yaml.bak docker-compose.prod.yaml
             docker compose -f docker-compose.prod.yaml up -d --remove-orphans
             exit 1

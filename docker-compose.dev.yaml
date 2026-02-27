@@ -74,10 +74,8 @@ services:
       - ./api:/app
       - /app/node_modules
     depends_on:
-      db:
-        condition: service_healthy
-      vault:
-        condition: service_healthy
+      - db
+      - vault
     networks:
       - blog-network
 
