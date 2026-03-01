@@ -16,34 +16,30 @@ jobs:
         env:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          # 1. Authenticate and extract token securely
+          # 1. Authenticate
           LOGIN_RES=$(curl -sf -X POST https://hub.docker.com/v2/users/login/ \
             -H "Content-Type: application/json" \
             -d "{\"username\": \"$DOCKERHUB_USER\", \"password\": \"$DOCKERHUB_TOKEN\"}")
           
           AUTH=$(echo "$LOGIN_RES" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
-
-          # 2. Set 7-day cutoff (seconds)
           CUTOFF=$(python3 -c "import time; print(int(time.time()) - 7 * 86400)")
 
           for REPO in myjs-app myreact-app; do
             echo "── Cleaning $DOCKERHUB_USER/$REPO ──"
 
-            # 3. Fetch tags and format as 'name|last_updated'
+            # 2. Fetch tags
             TAGS_JSON=$(curl -sf -H "Authorization: JWT $AUTH" \
               "https://hub.docker.com/v2/repositories/$DOCKERHUB_USER/$REPO/tags?page_size=100")
             
-            # Use a safer way to parse the list
             TAGS=$(echo "$TAGS_JSON" | python3 -c "import sys,json; results = json.load(sys.stdin).get('results', []); [print(t['name']+'|'+t['last_updated']) for t in results]")
 
-            # Handle case where no tags are returned
             if [ -z "$TAGS" ]; then
-              echo "  No tags found for $REPO."
+              echo "  No tags found."
               continue
             fi
 
+            # 3. Loop through tags
             echo "$TAGS" | while IFS='|' read -r NAME UPDATED; do
-              # skip empty lines
               [ -z "$NAME" ] && continue
 
               if [[ ! "$NAME" =~ ^sha- ]]; then
@@ -51,22 +47,12 @@ jobs:
                 continue
               fi
 
-              # 4. Parse timestamp (Fixed variable interpolation for Python)
-              # We pass the shell variable UPDATED as a Python argument to avoid quote escaping issues
-              UPDATED_TS=$(python3 -c "
-import datetime, sys
-updated_str = sys.argv[1]
-try:
-    dt = datetime.datetime.strptime(updated_str, '%Y-%m-%dT%H:%M:%S.%fZ')
-except ValueError:
-    dt = datetime.datetime.strptime(updated_str, '%Y-%m-%dT%H:%M:%SZ')
-print(int(dt.timestamp()))
-" "$UPDATED")
+              # Fixed Python block: Removed internal multiline to keep YAML happy
+              UPDATED_TS=$(python3 -c "import datetime, sys; s=sys.argv[1].replace('Z', '+0000'); print(int(datetime.datetime.fromisoformat(s).timestamp()))" "$UPDATED")
 
               if [ "$UPDATED_TS" -lt "$CUTOFF" ]; then
                 echo "  Deleting $NAME (last updated $UPDATED)"
-                curl -sf -X DELETE \
-                  -H "Authorization: JWT $AUTH" \
+                curl -sf -X DELETE -H "Authorization: JWT $AUTH" \
                   "https://hub.docker.com/v2/repositories/$DOCKERHUB_USER/$REPO/tags/$NAME/" \
                   && echo "  ✅ Deleted $NAME" || echo "  ⚠️  Failed to delete $NAME"
               else
@@ -76,3 +62,4 @@ print(int(dt.timestamp()))
             echo ""
             echo "✅ Cleanup complete for $REPO"
           done
+          
