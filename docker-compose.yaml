@@ -94,10 +94,26 @@ services:
     networks:
       - blog-network
 
+  # JENKINS INSTALLATION (for CI/CD demos)
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: jenkins
+    restart: unless-stopped
+    user: root # Jenkins needs root to run Docker commands for DinD builds
+    ports:
+      - "8080:8080"
+      - "50000:50000" 
+    volumes:
+      - jenkins-data:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock  # Allow Jenkins to run Docker commands on host
+    networks:
+      - blog-network
+
 volumes:
   mongo-data:
   vault-data:             # Persists Vault's initialized+sealed state across restarts
   vault-audit:            # Persists Vault audit logs
+  jenkins-data:           # Persists Jenkins configuration and job history
 
 networks:
   blog-network:

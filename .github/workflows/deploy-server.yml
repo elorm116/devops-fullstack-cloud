@@ -270,6 +270,26 @@ jobs:
               networks:
                 - blog-network
 
+            jenkins:
+              image: jenkins/jenkins:lts
+              container_name: jenkins
+              restart: unless-stopped
+              user: root
+              ports:
+                - "8080:8080"
+                - "50000:50000"
+              volumes:
+                - jenkins-data:/var/jenkins_home
+                - /var/run/docker.sock:/var/run/docker.sock  # For DinD builds
+              networks:
+                - blog-network
+              healthcheck:
+                test: ["CMD-SHELL", "curl", "-f", "http://localhost:8080/health"]
+                interval: 30s
+                timeout: 10s
+                retries: 5
+                start_period: 90s
+
             prometheus:
               image: prom/prometheus:v2.51.0
               container_name: prometheus
@@ -304,6 +324,7 @@ jobs:
                 - prometheus
               networks:
                 - blog-network
+            
 
           volumes:
             mongo-data:
@@ -311,6 +332,7 @@ jobs:
             vault-audit:
             prometheus-data:
             grafana-data:
+            jenkins-data:
 
           networks:
             blog-network:
