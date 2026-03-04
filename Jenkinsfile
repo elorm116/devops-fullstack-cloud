@@ -79,14 +79,35 @@ pipeline {
             }
         }
 
-        // ── Stage 3: Login to Docker Hub ──────────────────────────────────────
+        // ── Stage 3: Setup Buildx (multi-arch) ─────────────────────────────
+        stage('Setup Buildx') {
+          steps {
+            sh '''
+              set -euo pipefail
+
+              # When Jenkins runs on ARM hosts, building linux/amd64 requires QEMU/binfmt.
+              # Also ensure we use a docker-container builder (not the default docker driver).
+              docker run --privileged --rm tonistiigi/binfmt --install amd64
+
+              if docker buildx inspect multiarch >/dev/null 2>&1; then
+                docker buildx use multiarch
+              else
+                docker buildx create --name multiarch --driver docker-container --use
+              fi
+
+              docker buildx inspect --bootstrap
+            '''
+          }
+        }
+
+        // ── Stage 4: Login to Docker Hub ──────────────────────────────────────
         stage('Docker Hub Login') {
             steps {
                 sh 'echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin'
             }
         }
 
-        // ── Stage 4: Build & Push API ─────────────────────────────────────────
+        // ── Stage 5: Build & Push API ─────────────────────────────────────────
         stage('Build & Push API') {
             steps {
                 script {
@@ -96,6 +117,7 @@ pipeline {
                     def apiTags    = env.API_TAGS
                     sh """
                         docker buildx build \\
+                        --builder multiarch \\
                             --platform linux/amd64,linux/arm64 \\
                             --target production \\
                             --build-arg BUILD_DATE="${buildDate}" \\
@@ -109,7 +131,7 @@ pipeline {
             }
         }
 
-        // ── Stage 5: Build & Push Frontend ───────────────────────────────────
+        // ── Stage 6: Build & Push Frontend ───────────────────────────────────
         stage('Build & Push Frontend') {
             steps {
                 script {
@@ -120,6 +142,7 @@ pipeline {
                     def googleClient = env.GOOGLE_CLIENT_ID
                     sh """
                         docker buildx build \\
+                        --builder multiarch \\
                             --platform linux/amd64,linux/arm64 \\
                             --target production \\
                             --build-arg BUILD_DATE="${buildDate}" \\
@@ -134,7 +157,7 @@ pipeline {
             }
         }
 
-        // ── Stage 6: Copy configs to server ──────────────────────────────────
+        // ── Stage 7: Copy configs to server ──────────────────────────────────
         stage('Copy Configs to Server') {
             steps {
                 sshagent(['SERVER_SSH_KEY']) {
@@ -147,7 +170,7 @@ pipeline {
             }
         }
 
-        // ── Stage 7: Deploy via SSH ───────────────────────────────────────────
+        // ── Stage 8: Deploy via SSH ───────────────────────────────────────────
         stage('Deploy') {
             steps {
                 sshagent(['SERVER_SSH_KEY']) {
