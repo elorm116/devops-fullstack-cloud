@@ -100,7 +100,7 @@ pipeline {
         // ── Stage 4: Build & Push API ─────────────────────────────────────────
         stage('Build & Push API') {
             steps {
-                sh """
+                sh '''
                     docker buildx build \
                         --platform linux/amd64,linux/arm64 \
                         --target production \
@@ -110,14 +110,14 @@ pipeline {
                         $(echo "${env.API_TAGS}" | tr ',' '\\n' | sed 's/^/-t /') \
                         --push \
                         ./api
-                """
+                '''
             }
         }
 
         // ── Stage 5: Build & Push Frontend ───────────────────────────────────
         stage('Build & Push Frontend') {
             steps {
-                sh """
+                sh '''
                     docker buildx build \
                         --platform linux/amd64,linux/arm64 \
                         --target production \
@@ -128,7 +128,7 @@ pipeline {
                         $(echo "${env.FE_TAGS}" | tr ',' '\\n' | sed 's/^/-t /') \
                         --push \
                         ./myblog
-                """
+                '''
             }
         }
 
@@ -136,11 +136,11 @@ pipeline {
         stage('Copy Configs to Server') {
             steps {
                 sshagent(['SERVER_SSH_KEY']) {
-                    sh """
+                    sh '''
                         ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} "mkdir -p ${SERVER_DIR}"
                         scp -o StrictHostKeyChecking=no -r ./monitoring ${SERVER_USER}@${SERVER_HOST}:${SERVER_DIR}/
                         scp -o StrictHostKeyChecking=no -r ./scripts ${SERVER_USER}@${SERVER_HOST}:${SERVER_DIR}/
-                    """
+                    '''
                 }
             }
         }
