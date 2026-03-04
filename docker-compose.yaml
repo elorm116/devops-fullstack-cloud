@@ -96,7 +96,9 @@ services:
 
   # JENKINS INSTALLATION (for CI/CD demos)
   jenkins:
-    image: jenkins/jenkins:lts
+    build:
+      context: .
+      dockerfile: Dockerfile.jenkins
     container_name: jenkins
     restart: unless-stopped
     user: root # Jenkins needs root to run Docker commands for DinD builds
