@@ -3,7 +3,7 @@ FROM jenkins/jenkins:2.541.2-lts
 USER root
 
 # Install Docker CLI and Buildx
-RUN apt-get update && apt-get install -y ca-certificates curl gnupg && \
+RUN apt-get update && apt-get install -y ca-certificates curl gnupg qemu-user-static binfmt-support && \
     install -m 0755 -d /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
