@@ -49,6 +49,14 @@ jobs:
           echo "api_tags=$API_TAGS"                                                     >> "$GITHUB_OUTPUT"
           echo "fe_tags=$FE_TAGS"                                                       >> "$GITHUB_OUTPUT"
 
+          # Check if Dockerfile.jenkins changed — only rebuild Jenkins image if so
+          git fetch origin main --depth=2 2>/dev/null || true
+          if git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -q "Dockerfile.jenkins"; then
+            echo "jenkins_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "jenkins_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
 
       - name: Login to Docker Hub
@@ -91,6 +99,19 @@ jobs:
             VCS_REF=${{ steps.meta.outputs.full_sha }}
             VERSION=${{ steps.meta.outputs.version }}
             REACT_APP_GOOGLE_CLIENT_ID=${{ secrets.REACT_APP_GOOGLE_CLIENT_ID }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+        # Only rebuilds when Dockerfile.jenkins actually changes
+      - name: Build and Push Jenkins (jenkins-docker)
+        if: steps.meta.outputs.jenkins_changed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.jenkins
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.DOCKERHUB_USER }}/jenkins-docker:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -173,9 +194,13 @@ jobs:
 
           docker pull "$API_IMAGE"
           docker pull "$FRONTEND_IMAGE"
+          docker pull "${DOCKERHUB_USER}/jenkins-docker:latest" || echo "⚠️  jenkins-docker not yet pushed — using existing container"
+
 
           API_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$API_IMAGE")
           FRONTEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$FRONTEND_IMAGE")
+          JENKINS_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${DOCKERHUB_USER}/jenkins-docker:latest" 2>/dev/null || echo "${DOCKERHUB_USER}/jenkins-docker:latest")
+
 
           [ -f docker-compose.prod.yaml ] && cp docker-compose.prod.yaml docker-compose.prod.yaml.bak
 
@@ -271,9 +296,7 @@ jobs:
                 - blog-network
 
             jenkins:
-              build:
-                context: .
-                dockerfile: Dockerfile.jenkins
+              image: ${JENKINS_DIGEST}
               container_name: jenkins
               restart: unless-stopped
               user: root
