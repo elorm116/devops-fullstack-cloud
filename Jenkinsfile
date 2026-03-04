@@ -200,7 +200,7 @@ FRONTEND_DIGEST=\$(docker inspect --format='{{index .RepoDigests 0}}' "\$FRONTEN
 python3 - << PYEOF
 import os
 
-content = """services:
+content = '''services:
   db:
     image: mongo:7
     container_name: mongodb
@@ -358,7 +358,7 @@ volumes:
 networks:
   blog-network:
     driver: bridge
-""".format(
+'''.format(
     MONGO_ROOT_USER=os.environ['MONGO_ROOT_USER'],
     MONGO_ROOT_PASSWORD=os.environ['MONGO_ROOT_PASSWORD'],
     MONGO_APP_PASSWORD=os.environ['MONGO_APP_PASSWORD'],
