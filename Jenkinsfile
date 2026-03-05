@@ -79,7 +79,24 @@ pipeline {
             }
         }
 
-        // ── Stage 3: Setup Buildx (multi-arch) ─────────────────────────────
+        // ── Stage 3: SonarQube Code Analysis (self-hosted) ─────────────────
+        stage('SonarQube Analysis') {
+            steps {
+                withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
+                    sh '''
+                        docker run --rm \
+                            --network dockerize_blog-network \
+                            -e SONAR_TOKEN="$SONAR_TOKEN" \
+                            -e SONAR_HOST_URL="http://sonarqube:9000" \
+                            -v "$(pwd):/usr/src" \
+                            sonarsource/sonar-scanner-cli:latest \
+                            || echo "⚠️  SonarQube scan failed — is SonarQube running?"
+                    '''
+                }
+            }
+        }
+
+        // ── Stage 4: Setup Buildx (multi-arch) ─────────────────────────────
         stage('Setup Buildx') {
           steps {
             sh '''
@@ -103,14 +120,14 @@ pipeline {
           }
         }
 
-        // ── Stage 4: Login to Docker Hub ──────────────────────────────────────
+        // ── Stage 5: Login to Docker Hub ──────────────────────────────────────
         stage('Docker Hub Login') {
             steps {
                 sh 'echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin'
             }
         }
 
-        // ── Stage 5: Build & Push API ─────────────────────────────────────────
+        // ── Stage 6: Build & Push API ─────────────────────────────────────────
         stage('Build & Push API') {
             steps {
                 script {
@@ -134,7 +151,7 @@ pipeline {
             }
         }
 
-        // ── Stage 6: Build & Push Frontend ───────────────────────────────────
+        // ── Stage 7: Build & Push Frontend ───────────────────────────────────
         stage('Build & Push Frontend') {
             steps {
                 script {
@@ -160,7 +177,7 @@ pipeline {
             }
         }
 
-        // ── Stage 7: Copy configs to server ──────────────────────────────────
+        // ── Stage 8: Copy configs to server ──────────────────────────────────
         stage('Copy Configs to Server') {
             steps {
                 sshagent(['SERVER_SSH_KEY']) {
@@ -173,7 +190,7 @@ pipeline {
             }
         }
 
-        // ── Stage 8: Deploy via SSH ───────────────────────────────────────────
+        // ── Stage 9: Deploy via SSH ───────────────────────────────────────────
         stage('Deploy') {
             steps {
                 sshagent(['SERVER_SSH_KEY']) {
@@ -393,6 +410,50 @@ cat > docker-compose.prod.yaml << EOF
                 - prometheus
               networks:
                 - blog-network
+
+            sonarqube-db:
+              image: postgres:16-alpine
+              container_name: sonarqube-db
+              restart: unless-stopped
+              environment:
+                - POSTGRES_USER=sonarqube
+                - POSTGRES_PASSWORD=sonarqube
+                - POSTGRES_DB=sonarqube
+              volumes:
+                - sonarqube-db-data:/var/lib/postgresql/data
+              networks:
+                - blog-network
+              healthcheck:
+                test: ["CMD-SHELL", "pg_isready -U sonarqube"]
+                interval: 10s
+                timeout: 5s
+                retries: 5
+                start_period: 10s
+
+            sonarqube:
+              image: sonarqube:lts-community
+              container_name: sonarqube
+              restart: unless-stopped
+              ports:
+                - "9000:9000"
+              environment:
+                - SONAR_JDBC_URL=jdbc:postgresql://sonarqube-db:5432/sonarqube
+                - SONAR_JDBC_USERNAME=sonarqube
+                - SONAR_JDBC_PASSWORD=sonarqube
+              volumes:
+                - sonarqube-data:/opt/sonarqube/data
+                - sonarqube-extensions:/opt/sonarqube/extensions
+                - sonarqube-logs:/opt/sonarqube/logs
+              depends_on:
+                - sonarqube-db
+              networks:
+                - blog-network
+              healthcheck:
+                test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9000/api/system/status | grep -q UP || exit 1"]
+                interval: 30s
+                timeout: 10s
+                retries: 10
+                start_period: 120s
             
 
           volumes:
@@ -402,6 +463,10 @@ cat > docker-compose.prod.yaml << EOF
             prometheus-data:
             grafana-data:
             jenkins-data:
+            sonarqube-db-data:
+            sonarqube-data:
+            sonarqube-extensions:
+            sonarqube-logs:
 
           networks:
             blog-network:
@@ -445,7 +510,9 @@ docker exec mongodb mongosh \\
     "
 
 # ── Step 2: Bring up all remaining services ──
-    if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans db vault app myblog prometheus grafana; then
+# SonarQube requires higher vm.max_map_count
+sudo sysctl -w vm.max_map_count=524288 2>/dev/null || true
+    if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans db vault app myblog prometheus grafana sonarqube-db sonarqube; then
     echo "Deploy failed — capturing diagnostics..."
     echo "--- api_container logs ---"
     docker logs api_container 2>&1 | tail -50 || true
@@ -455,7 +522,7 @@ docker exec mongodb mongosh \\
     docker logs vault 2>&1 | tail -20 || true
     echo "--- Rolling back ---"
     [ -f docker-compose.prod.yaml.bak ] && mv docker-compose.prod.yaml.bak docker-compose.prod.yaml
-    docker compose -f docker-compose.prod.yaml up -d --remove-orphans db vault app myblog prometheus grafana
+    docker compose -f docker-compose.prod.yaml up -d --remove-orphans db vault app myblog prometheus grafana sonarqube-db sonarqube
     exit 1
 fi
 
