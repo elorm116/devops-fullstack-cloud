@@ -80,18 +80,25 @@ pipeline {
         }
 
         // ── Stage 3: SonarQube Code Analysis (self-hosted) ─────────────────
+        // Non-blocking — skips gracefully when SONAR_TOKEN credential or
+        // the SonarQube server is not yet available.
         stage('SonarQube Analysis') {
             steps {
-                withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
-                    sh '''
-                        docker run --rm \
-                            --network dockerize_blog-network \
-                            -e SONAR_TOKEN="$SONAR_TOKEN" \
-                            -e SONAR_HOST_URL="http://sonarqube:9000" \
-                            -v "$(pwd):/usr/src" \
-                            sonarsource/sonar-scanner-cli:latest \
-                            || echo "⚠️  SonarQube scan failed — is SonarQube running?"
-                    '''
+                script {
+                    try {
+                        withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
+                            sh '''
+                                docker run --rm \
+                                    --network dockerize_blog-network \
+                                    -e SONAR_TOKEN="$SONAR_TOKEN" \
+                                    -e SONAR_HOST_URL="http://sonarqube:9000" \
+                                    -v "$(pwd):/usr/src" \
+                                    sonarsource/sonar-scanner-cli:latest
+                            '''
+                        }
+                    } catch (e) {
+                        echo "⚠️  SonarQube analysis skipped: ${e.message}"
+                    }
                 }
             }
         }
