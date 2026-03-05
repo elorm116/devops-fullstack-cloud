@@ -178,7 +178,7 @@ pipeline {
             steps {
                 sshagent(['SERVER_SSH_KEY']) {
                     script {
-                                                def apiImage      = env.API_IMAGE
+                        def apiImage      = env.API_IMAGE
                         def frontendImage = env.FRONTEND_IMAGE
                         def serverDir     = env.SERVER_DIR
                         def serverUser    = env.SERVER_USER
@@ -498,4 +498,5 @@ EOSSH
             sh 'docker logout || true'
         }
     }
+}
 }
