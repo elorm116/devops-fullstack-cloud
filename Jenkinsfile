@@ -482,6 +482,8 @@ EOSSH
         }
     }
 
+        }
+
     post {
         success {
             script {
@@ -499,4 +501,4 @@ EOSSH
         }
     }
 }
-}
+
