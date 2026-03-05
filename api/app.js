@@ -46,9 +46,12 @@ const authLimiter = rateLimit({
 });
 
 // ─── Internal-only middleware ────────────────────────────────────────────────
+// Allows localhost and Docker bridge-network IPs (Prometheus scrapes /metrics
+// from a sibling container whose source IP is on the 172.x or 10.x subnet).
+const PRIVATE_IP_RE = /^(::ffff:)?(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/;
 const internalOnly = (req, res, next) => {
   const ip = req.ip || req.connection.remoteAddress;
-  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
+  if (ip === '::1' || PRIVATE_IP_RE.test(ip)) {
     return next();
   }
   return res.status(403).json({ message: 'Forbidden' });
