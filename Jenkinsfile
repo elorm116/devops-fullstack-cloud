@@ -91,7 +91,7 @@ pipeline {
                                 docker run --rm \
                                     --network dockerize_blog-network \
                                     -e SONAR_TOKEN="$SONAR_TOKEN" \
-                                    -e SONAR_HOST_URL="http://sonarqube:9000" \
+                                    -e SONAR_HOST_URL="http://nam.taild248f7.ts.net:9000" \
                                     -v "$(pwd):/usr/src" \
                                     sonarsource/sonar-scanner-cli:latest
                             '''
@@ -555,8 +555,6 @@ EOSSH
             }
         }
     }
-
-        }
 
     post {
         success {
