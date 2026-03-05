@@ -88,13 +88,16 @@ pipeline {
               # When Jenkins runs on ARM hosts, building linux/amd64 requires QEMU/binfmt.
               # Also ensure we use a docker-container builder (not the default docker driver).
               docker run --privileged --rm tonistiigi/binfmt --install amd64
+              # 2. Clean up any 'dead' or 'timed out' builders to start fresh
+              docker buildx rm multiarch || true
 
-              if docker buildx inspect multiarch >/dev/null 2>&1; then
-                docker buildx use multiarch
-              else
-                docker buildx create --name multiarch --driver docker-container --use
-              fi
+              # 3. Create the builder with a specific configuration to handle timeouts better
+              docker buildx create --name multiarch --driver docker-container --use \
+                --driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=10485760 \
+                --driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760
 
+            # 4. Bootstrap with a longer timeout to prevent 'context deadline exceeded'
+            # This forces the BuildKit container to start up completely before we hit 'Build'
               docker buildx inspect --bootstrap
             '''
           }
@@ -421,7 +424,7 @@ docker exec mongodb mongosh \\
     "
 
 # ── Step 2: Bring up all remaining services ──
-if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans; then
+    if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans db vault app myblog prometheus grafana; then
     echo "Deploy failed — capturing diagnostics..."
     echo "--- api_container logs ---"
     docker logs api_container 2>&1 | tail -50 || true
