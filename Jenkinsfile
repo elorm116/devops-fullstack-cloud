@@ -177,26 +177,47 @@ pipeline {
         stage('Deploy') {
             steps {
                 sshagent(['SERVER_SSH_KEY']) {
+                    script {
+                                                def apiImage      = env.API_IMAGE
+                        def frontendImage = env.FRONTEND_IMAGE
+                        def serverDir     = env.SERVER_DIR
+                        def serverUser    = env.SERVER_USER
+                        def serverHost    = env.SERVER_HOST
+                        def frontendPort  = env.FRONTEND_PORT
+                        def grafanaPort   = env.GRAFANA_PORT
+                        def dockerUser    = env.DOCKERHUB_USER
+                        def dockerToken   = env.DOCKERHUB_TOKEN
+                        def jwtSecret     = env.JWT_SECRET
+                        def grafanaUser   = env.GRAFANA_ADMIN_USER
+                        def grafanaPass   = env.GRAFANA_ADMIN_PASSWORD
+                        def vaultRoleId   = env.VAULT_ROLE_ID
+                        def vaultSecretId = env.VAULT_SECRET_ID
+                        def mongoRootUser = env.MONGO_ROOT_USER
+                        def mongoRootPass = env.MONGO_ROOT_PASSWORD
+                        def mongoAppPass  = env.MONGO_APP_PASSWORD
+                        def corsOrigin    = env.CORS_ORIGIN
+                        def googleClient  = env.GOOGLE_CLIENT_ID
+
                     sh """
-                        ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} \\
-                            API_IMAGE="${env.API_IMAGE}" \\
-                            FRONTEND_IMAGE="${env.FRONTEND_IMAGE}" \\
-                            SERVER_DIR="${SERVER_DIR}" \\
-                            FRONTEND_PORT="${FRONTEND_PORT}" \\
-                            GRAFANA_PORT="${GRAFANA_PORT}" \\
-                            DOCKERHUB_USER="${DOCKERHUB_USER}" \\
-                            DOCKERHUB_TOKEN="${DOCKERHUB_TOKEN}" \\
-                            JWT_SECRET="${JWT_SECRET}" \\
-                            GRAFANA_ADMIN_USER="${GRAFANA_ADMIN_USER}" \\
-                            GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD}" \\
-                            VAULT_ROLE_ID="${VAULT_ROLE_ID}" \\
-                            VAULT_SECRET_ID="${VAULT_SECRET_ID}" \\
-                            MONGO_ROOT_USER="${MONGO_ROOT_USER}" \\
-                            MONGO_ROOT_PASSWORD="${MONGO_ROOT_PASSWORD}" \\
-                            MONGO_APP_PASSWORD="${MONGO_APP_PASSWORD}" \\
-                            CORS_ORIGIN="${CORS_ORIGIN}" \\
-                            GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID}" \\
-                            bash -s << 'EOSSH'
+                            ssh -o StrictHostKeyChecking=no ${serverUser}@${serverHost} \\
+                                API_IMAGE="${apiImage}" \\
+                                FRONTEND_IMAGE="${frontendImage}" \\
+                                SERVER_DIR="${serverDir}" \\
+                                FRONTEND_PORT="${frontendPort}" \\
+                                GRAFANA_PORT="${grafanaPort}" \\
+                                DOCKERHUB_USER="${dockerUser}" \\
+                                DOCKERHUB_TOKEN="${dockerToken}" \\
+                                JWT_SECRET="${jwtSecret}" \\
+                                GRAFANA_ADMIN_USER="${grafanaUser}" \\
+                                GRAFANA_ADMIN_PASSWORD="${grafanaPass}" \\
+                                VAULT_ROLE_ID="${vaultRoleId}" \\
+                                VAULT_SECRET_ID="${vaultSecretId}" \\
+                                MONGO_ROOT_USER="${mongoRootUser}" \\
+                                MONGO_ROOT_PASSWORD="${mongoRootPass}" \\
+                                MONGO_APP_PASSWORD="${mongoAppPass}" \\
+                                CORS_ORIGIN="${corsOrigin}" \\
+                                GOOGLE_CLIENT_ID="${googleClient}" \\
+                                bash -s << 'EOSSH'
 set -euo pipefail
 
 # Fail loudly if critical secrets are missing
