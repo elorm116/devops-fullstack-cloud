@@ -438,7 +438,7 @@ cat > docker-compose.prod.yaml << EOF
                 start_period: 10s
 
             sonarqube:
-              image: sonarqube:community
+              image: sonarqube:25.12.0.117093-community
               container_name: sonarqube
               restart: unless-stopped
               ports:
