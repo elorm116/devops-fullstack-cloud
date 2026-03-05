@@ -431,7 +431,7 @@ if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans; then
     docker logs vault 2>&1 | tail -20 || true
     echo "--- Rolling back ---"
     [ -f docker-compose.prod.yaml.bak ] && mv docker-compose.prod.yaml.bak docker-compose.prod.yaml
-    docker compose -f docker-compose.prod.yaml up -d --remove-orphans
+    docker compose -f docker-compose.prod.yaml up -d --remove-orphans db vault app myblog prometheus grafana
     exit 1
 fi
 
