@@ -94,7 +94,12 @@ pipeline {
                                     -e SONAR_HOST_URL="http://${SERVER_HOST}:9000" \
                                     -v "$(pwd):/usr/src" \
                                     sonarsource/sonar-scanner-cli:latest \
-                                    -Dproject.settings=/usr/src/sonar-project.properties
+                                    -Dsonar.projectKey=elorm116:devops-fullstack-cloud \
+                                    -Dsonar.projectName="DevOps Fullstack Cloud" \
+                                    -Dsonar.sources=api,myblog/src \
+                                    -Dsonar.exclusions="**/node_modules/**,**/build/**,**/dist/**,**/coverage/**,**/*.test.js,**/*.spec.js,**/monitoring/**,**/k8s/**,**/terraform/**,**/helm/**,**/scripts/**" \
+                                    -Dsonar.javascript.lcov.reportPaths="api/coverage/lcov.info,myblog/coverage/lcov.info" \
+                                    -Dsonar.sourceEncoding=UTF-8
                             '''
                         }
                     } catch (e) {
