@@ -87,15 +87,14 @@ pipeline {
                 script {
                     try {
                         withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
-                            def serverHost = env.SERVER_HOST
-                            sh """
+                            sh '''
                                 docker run --rm \
                                     --network dockerize_blog-network \
                                     -e SONAR_TOKEN="$SONAR_TOKEN" \
-                                    -e SONAR_HOST_URL="http://${serverHost}:9000" \
+                                    -e SONAR_HOST_URL="http://${SERVER_HOST}:9000" \
                                     -v "$(pwd):/usr/src" \
                                     sonarsource/sonar-scanner-cli:latest
-                            """
+                            '''
                         }
                     } catch (e) {
                         echo "⚠️  SonarQube analysis skipped: ${e.message}"
