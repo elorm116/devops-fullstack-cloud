@@ -93,7 +93,9 @@ pipeline {
                                     -e SONAR_TOKEN="$SONAR_TOKEN" \
                                     -e SONAR_HOST_URL="http://${SERVER_HOST}:9000" \
                                     -v "$(pwd):/usr/src" \
+                                    -w /usr/src \
                                     sonarsource/sonar-scanner-cli:latest \
+                                    -Dsonar.projectBaseDir=/usr/src \
                                     -Dsonar.projectKey=elorm116:devops-fullstack-cloud \
                                     -Dsonar.projectName="DevOps Fullstack Cloud" \
                                     -Dsonar.sources=api,myblog/src \
