@@ -28,6 +28,9 @@ pipeline {
         VAULT_SECRET_ID        = credentials('VAULT_SECRET_ID')
         GOOGLE_CLIENT_ID       = credentials('GOOGLE_CLIENT_ID')
         CORS_ORIGIN            = credentials('CORS_ORIGIN')
+
+        // SonarScanner version — update here when new release comes out
+        SCANNER_VERSION        = '6.2.1.4610'
     }
 
     stages {
@@ -39,7 +42,56 @@ pipeline {
             }
         }
 
-        // ── Stage 2: Determine Metadata ───────────────────────────────────────
+        // ── Stage 2: Setup Native SonarScanner ───────────────────────────────
+        // Downloads the native Linux binary — no Docker, no QEMU emulation.
+        // FIX 1: Removed `when` blocks — BRANCH_NAME is only populated in
+        //        Multibranch Pipeline jobs. This is a regular Pipeline job so
+        //        BRANCH_NAME is always null, causing both stages to silently skip.
+        // FIX 2: Arch-aware download URL. The plain `-linux` zip is x86_64 only.
+        //        On this Raspberry Pi (aarch64) we need the `-linux-aarch64` zip.
+        //        uname -m detects the host arch at runtime so this works on both.
+        // FIX 3: Java check is now a hard fail, not a warning. The scanner
+        //        requires JRE — a silent warning just delays the failure.
+        stage('Setup SonarScanner') {
+            steps {
+                sh '''
+                    set -euo pipefail
+
+                    # Hard-fail early if Java is missing — scanner won't run without it
+                    if ! java -version 2>/dev/null; then
+                        echo "❌ Java not found — install JRE in the Jenkins container"
+                        exit 1
+                    fi
+
+                    SCANNER_DIR="sonar-scanner"
+
+                    # Pick the correct binary for this host architecture
+                    ARCH=$(uname -m)
+                    if [ "$ARCH" = "aarch64" ]; then
+                        SCANNER_ZIP="sonar-scanner-cli-${SCANNER_VERSION}-linux-aarch64.zip"
+                    else
+                        SCANNER_ZIP="sonar-scanner-cli-${SCANNER_VERSION}-linux-x86-64.zip"
+                    fi
+
+                    # Download only if not already cached in the workspace
+                    if [ ! -f "${SCANNER_DIR}/bin/sonar-scanner" ]; then
+                        echo "Downloading SonarScanner ${SCANNER_VERSION} for ${ARCH}..."
+                        curl -sSL -o "${SCANNER_ZIP}" \
+                            "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/${SCANNER_ZIP}"
+
+                        unzip -q "${SCANNER_ZIP}"
+                        mv "sonar-scanner-${SCANNER_VERSION}-linux"* "${SCANNER_DIR}"
+                        chmod +x "${SCANNER_DIR}/bin/sonar-scanner"
+                        rm -f "${SCANNER_ZIP}"
+                        echo "✅ SonarScanner ready"
+                    else
+                        echo "SonarScanner already cached in workspace — skipping download"
+                    fi
+                '''
+            }
+        }
+
+        // ── Stage 3: Determine Metadata ───────────────────────────────────────
         stage('Determine Metadata') {
             steps {
                 script {
@@ -79,70 +131,53 @@ pipeline {
             }
         }
 
-        // ── Stage 3: SonarQube Code Analysis (self-hosted) ─────────────────
-        // Non-blocking — skips gracefully when SONAR_TOKEN credential or
-        // the SonarQube server is not yet available.
+        // ── Stage 4: SonarQube Analysis ───────────────────────────────────────
+        // FIX 4: sonar.login is deprecated from SonarQube 10+. Use sonar.token.
+        //        Your server is on 25.12.0 so sonar.login would be silently ignored.
+        // Note:  sonar-project.properties at repo root handles projectKey, sources
+        //        and exclusions — matching exactly how GHA's scan action works.
+        //        Only host URL and token are passed here (can't live in the file).
         stage('SonarQube Analysis') {
             steps {
                 script {
                     try {
                         withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
                             sh '''
-                                docker run --rm --platform linux/amd64 \
-                                    --network dockerize_blog-network \
-                                    -e SONAR_TOKEN="$SONAR_TOKEN" \
-                                    -e SONAR_HOST_URL="http://${SERVER_HOST}:9000" \
-                                    -v "$(pwd):/usr/src" \
-                                    -w /usr/src \
-                                    sonarsource/sonar-scanner-cli:latest \
-                                    -Dsonar.projectBaseDir=/usr/src \
-                                    -Dsonar.projectKey=elorm116:devops-fullstack-cloud \
-                                    -Dsonar.projectName="DevOps Fullstack Cloud" \
-                                    -Dsonar.sources=api,myblog/src \
-                                    -Dsonar.exclusions="**/node_modules/**,**/build/**,**/dist/**,**/coverage/**,**/*.test.js,**/*.spec.js,**/monitoring/**,**/k8s/**,**/terraform/**,**/helm/**,**/scripts/**" \
-                                    -Dsonar.javascript.lcov.reportPaths="api/coverage/lcov.info,myblog/coverage/lcov.info" \
-                                    -Dsonar.sourceEncoding=UTF-8
+                                ./sonar-scanner/bin/sonar-scanner \
+                                    -Dsonar.host.url=http://${SERVER_HOST}:9000 \
+                                    -Dsonar.token=$SONAR_TOKEN
                             '''
                         }
-                    } catch (e) {
+                    } catch (Exception e) {
                         echo "⚠️  SonarQube analysis skipped: ${e.message}"
                     }
                 }
             }
         }
 
-        // ── Stage 4: Setup Buildx (multi-arch) ─────────────────────────────
+        // ── Stage 5: Setup Buildx (multi-arch) ───────────────────────────────
         stage('Setup Buildx') {
-          steps {
-            sh '''
-              set -euo pipefail
-
-              # When Jenkins runs on ARM hosts, building linux/amd64 requires QEMU/binfmt.
-              # Also ensure we use a docker-container builder (not the default docker driver).
-              docker run --privileged --rm tonistiigi/binfmt --install amd64
-              # 2. Clean up any 'dead' or 'timed out' builders to start fresh
-              docker buildx rm multiarch || true
-
-              # 3. Create the builder with a specific configuration to handle timeouts better
-              docker buildx create --name multiarch --driver docker-container --use \
-                --driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=10485760 \
-                --driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760
-
-            # 4. Bootstrap with a longer timeout to prevent 'context deadline exceeded'
-            # This forces the BuildKit container to start up completely before we hit 'Build'
-              docker buildx inspect --bootstrap
-            '''
-          }
+            steps {
+                sh '''
+                    set -euo pipefail
+                    docker run --privileged --rm tonistiigi/binfmt --install amd64
+                    docker buildx rm multiarch || true
+                    docker buildx create --name multiarch --driver docker-container --use \
+                        --driver-opt env.BUILDKIT_STEP_LOG_MAX_SIZE=10485760 \
+                        --driver-opt env.BUILDKIT_STEP_LOG_MAX_SPEED=10485760
+                    docker buildx inspect --bootstrap
+                '''
+            }
         }
 
-        // ── Stage 5: Login to Docker Hub ──────────────────────────────────────
+        // ── Stage 6: Login to Docker Hub ─────────────────────────────────────
         stage('Docker Hub Login') {
             steps {
                 sh 'echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin'
             }
         }
 
-        // ── Stage 6: Build & Push API ─────────────────────────────────────────
+        // ── Stage 7: Build & Push API ─────────────────────────────────────────
         stage('Build & Push API') {
             steps {
                 script {
@@ -152,7 +187,7 @@ pipeline {
                     def apiTags    = env.API_TAGS
                     sh """
                         docker buildx build \\
-                        --builder multiarch \\
+                            --builder multiarch \\
                             --platform linux/amd64,linux/arm64 \\
                             --target production \\
                             --build-arg BUILD_DATE="${buildDate}" \\
@@ -166,7 +201,7 @@ pipeline {
             }
         }
 
-        // ── Stage 7: Build & Push Frontend ───────────────────────────────────
+        // ── Stage 8: Build & Push Frontend ───────────────────────────────────
         stage('Build & Push Frontend') {
             steps {
                 script {
@@ -177,7 +212,7 @@ pipeline {
                     def googleClient = env.GOOGLE_CLIENT_ID
                     sh """
                         docker buildx build \\
-                        --builder multiarch \\
+                            --builder multiarch \\
                             --platform linux/amd64,linux/arm64 \\
                             --target production \\
                             --build-arg BUILD_DATE="${buildDate}" \\
@@ -192,20 +227,20 @@ pipeline {
             }
         }
 
-        // ── Stage 8: Copy configs to server ──────────────────────────────────
+        // ── Stage 9: Copy Configs to Server ──────────────────────────────────
         stage('Copy Configs to Server') {
             steps {
                 sshagent(['SERVER_SSH_KEY']) {
                     sh """
                         ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} "mkdir -p ${SERVER_DIR}"
                         scp -o StrictHostKeyChecking=no -r ./monitoring ${SERVER_USER}@${SERVER_HOST}:${SERVER_DIR}/
-                        scp -o StrictHostKeyChecking=no -r ./scripts ${SERVER_USER}@${SERVER_HOST}:${SERVER_DIR}/
+                        scp -o StrictHostKeyChecking=no -r ./scripts    ${SERVER_USER}@${SERVER_HOST}:${SERVER_DIR}/
                     """
                 }
             }
         }
 
-        // ── Stage 9: Deploy via SSH ───────────────────────────────────────────
+        // ── Stage 10: Deploy via SSH ──────────────────────────────────────────
         stage('Deploy') {
             steps {
                 sshagent(['SERVER_SSH_KEY']) {
@@ -230,7 +265,7 @@ pipeline {
                         def corsOrigin    = env.CORS_ORIGIN
                         def googleClient  = env.GOOGLE_CLIENT_ID
 
-                    sh """
+                        sh """
                             ssh -o StrictHostKeyChecking=no ${serverUser}@${serverHost} \\
                                 API_IMAGE="${apiImage}" \\
                                 FRONTEND_IMAGE="${frontendImage}" \\
@@ -281,219 +316,217 @@ JENKINS_DIGEST=\$(docker inspect --format='{{index .RepoDigests 0}}' "\${DOCKERH
 [ -f docker-compose.prod.yaml ] && cp docker-compose.prod.yaml docker-compose.prod.yaml.bak
 
 cat > docker-compose.prod.yaml << EOF
-          services:
-            db:
-              image: mongo:7
-              container_name: mongodb
-              restart: unless-stopped
-              environment:
-                - MONGO_INITDB_ROOT_USERNAME=\${MONGO_ROOT_USER}
-                - MONGO_INITDB_ROOT_PASSWORD=\${MONGO_ROOT_PASSWORD}
-                - MONGO_APP_PASSWORD=\${MONGO_APP_PASSWORD}
-              volumes:
-                - mongo-data:/data/db
-                - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
-              healthcheck:
-                test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
-                interval: 10s
-                timeout: 5s
-                retries: 5
-                start_period: 20s
-              networks:
-                - blog-network
+name: dockerize
 
-            vault:
-              image: hashicorp/vault:1.16
-              container_name: vault
-              restart: unless-stopped
-              cap_add:
-                - IPC_LOCK
-              environment:
-                VAULT_LOCAL_CONFIG: |
-                  {
-                    "storage": { "file": { "path": "/vault/data" } },
-                    "listener": [{ "tcp": { "address": "0.0.0.0:8200", "tls_disable": true } }],
-                    "default_lease_ttl": "1h",
-                    "max_lease_ttl": "4h",
-                    "ui": true
-                  }
-              command: server
-              volumes:
-                - vault-data:/vault/data
-                - vault-audit:/vault/audit
-              ports:
-                - "8200:8200"
-              healthcheck:
-                test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/init || exit 1"]
-                interval: 10s
-                timeout: 3s
-                retries: 5
-                start_period: 10s
-              networks:
-                - blog-network
+services:
+  db:
+    image: mongo:7
+    container_name: mongodb
+    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=\${MONGO_ROOT_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=\${MONGO_ROOT_PASSWORD}
+      - MONGO_APP_PASSWORD=\${MONGO_APP_PASSWORD}
+    volumes:
+      - mongo-data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - blog-network
 
-            app:
-              image: \${API_DIGEST}
-              container_name: api_container
-              restart: unless-stopped
-              environment:
-                - NODE_ENV=production
-                - PORT=4000
-                - MONGO_URI=mongodb://blogapi:\${MONGO_APP_PASSWORD}@db:27017/blog?authSource=blog
-                - JWT_SECRET=\${JWT_SECRET}
-                - CORS_ORIGIN=\${CORS_ORIGIN}
-                - VAULT_ADDR=http://vault:8200
-                - VAULT_ROLE_ID=\${VAULT_ROLE_ID}
-                - VAULT_SECRET_ID=\${VAULT_SECRET_ID}
-                - GOOGLE_CLIENT_ID=\${GOOGLE_CLIENT_ID}
-              expose:
-                - "4000"
-              depends_on:
-                - db
-                - vault
-              healthcheck:
-                test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health >/dev/null || exit 1"]
-                interval: 10s
-                timeout: 5s
-                retries: 5
-                start_period: 20s
-              networks:
-                - blog-network
+  vault:
+    image: hashicorp/vault:1.16
+    container_name: vault
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_LOCAL_CONFIG: |
+        {
+          "storage": { "file": { "path": "/vault/data" } },
+          "listener": [{ "tcp": { "address": "0.0.0.0:8200", "tls_disable": true } }],
+          "default_lease_ttl": "1h",
+          "max_lease_ttl": "4h",
+          "ui": true
+        }
+    command: server
+    volumes:
+      - vault-data:/vault/data
+      - vault-audit:/vault/audit
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/init || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - blog-network
 
-            myblog:
-              image: \${FRONTEND_DIGEST}
-              container_name: myblog_container
-              restart: unless-stopped
-              ports:
-                - "\${FRONTEND_PORT}:80"
-              depends_on:
-                - app
-              networks:
-                - blog-network
+  app:
+    image: \${API_DIGEST}
+    container_name: api_container
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - MONGO_URI=mongodb://blogapi:\${MONGO_APP_PASSWORD}@db:27017/blog?authSource=blog
+      - JWT_SECRET=\${JWT_SECRET}
+      - CORS_ORIGIN=\${CORS_ORIGIN}
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_ROLE_ID=\${VAULT_ROLE_ID}
+      - VAULT_SECRET_ID=\${VAULT_SECRET_ID}
+      - GOOGLE_CLIENT_ID=\${GOOGLE_CLIENT_ID}
+    expose:
+      - "4000"
+    depends_on:
+      - db
+      - vault
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - blog-network
 
-            jenkins:
-              image: \${JENKINS_DIGEST}
-              container_name: jenkins
-              restart: unless-stopped
-              user: root
-              ports:
-                - "8080:8080"
-                - "50000:50000"
-              volumes:
-                - jenkins-data:/var/jenkins_home
-                - /var/run/docker.sock:/var/run/docker.sock  # For DinD builds
-              networks:
-                - blog-network
-              healthcheck:
-                test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/8080' || exit 1"]
-                interval: 30s
-                timeout: 10s
-                retries: 5
-                start_period: 90s
+  myblog:
+    image: \${FRONTEND_DIGEST}
+    container_name: myblog_container
+    restart: unless-stopped
+    ports:
+      - "\${FRONTEND_PORT}:80"
+    depends_on:
+      - app
+    networks:
+      - blog-network
 
-            prometheus:
-              image: prom/prometheus:v2.51.0
-              container_name: prometheus
-              restart: unless-stopped
-              volumes:
-                - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-                - prometheus-data:/prometheus
-              command:
-                - '--config.file=/etc/prometheus/prometheus.yml'
-                - '--storage.tsdb.path=/prometheus'
-                - '--storage.tsdb.retention.time=15d'
-              depends_on:
-                - app
-              networks:
-                - blog-network
+  jenkins:
+    image: \${JENKINS_DIGEST}
+    container_name: jenkins
+    restart: unless-stopped
+    user: root
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins-data:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - blog-network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/8080' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
 
-            grafana:
-              image: grafana/grafana:10.4.1
-              container_name: grafana
-              restart: unless-stopped
-              ports:
-                - "\${GRAFANA_PORT}:3000"
-              volumes:
-                - ./monitoring/grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-                - ./monitoring/grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-                - grafana-data:/var/lib/grafana
-              environment:
-                - GF_SECURITY_ADMIN_USER=\${GRAFANA_ADMIN_USER}
-                - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_ADMIN_PASSWORD}
-                - GF_USERS_ALLOW_SIGN_UP=false
-              depends_on:
-                - prometheus
-              networks:
-                - blog-network
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+    depends_on:
+      - app
+    networks:
+      - blog-network
 
-            sonarqube-db:
-              image: postgres:16-alpine
-              container_name: sonarqube-db
-              restart: unless-stopped
-              environment:
-                - POSTGRES_USER=sonarqube
-                - POSTGRES_PASSWORD=sonarqube
-                - POSTGRES_DB=sonarqube
-              volumes:
-                - sonarqube-db-data:/var/lib/postgresql/data
-              networks:
-                - blog-network
-              healthcheck:
-                test: ["CMD-SHELL", "pg_isready -U sonarqube"]
-                interval: 10s
-                timeout: 5s
-                retries: 5
-                start_period: 10s
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "\${GRAFANA_PORT}:3000"
+    volumes:
+      - ./monitoring/grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=\${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    networks:
+      - blog-network
 
-            sonarqube:
-              image: sonarqube:25.12.0.117093-community
-              container_name: sonarqube
-              restart: unless-stopped
-              ports:
-                - "9000:9000"
-              environment:
-                - SONAR_JDBC_URL=jdbc:postgresql://sonarqube-db:5432/sonarqube
-                - SONAR_JDBC_USERNAME=sonarqube
-                - SONAR_JDBC_PASSWORD=sonarqube
-              volumes:
-                - sonarqube-data:/opt/sonarqube/data
-                - sonarqube-extensions:/opt/sonarqube/extensions
-                - sonarqube-logs:/opt/sonarqube/logs
-              depends_on:
-                - sonarqube-db
-              networks:
-                - blog-network
-              healthcheck:
-                test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9000/api/system/status | grep -q UP || exit 1"]
-                interval: 30s
-                timeout: 10s
-                retries: 10
-                start_period: 120s
-            
+  sonarqube-db:
+    image: postgres:16-alpine
+    container_name: sonarqube-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=sonarqube
+      - POSTGRES_PASSWORD=sonarqube
+      - POSTGRES_DB=sonarqube
+    volumes:
+      - sonarqube-db-data:/var/lib/postgresql/data
+    networks:
+      - blog-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonarqube"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
-          volumes:
-            mongo-data:
-            vault-data:
-            vault-audit:
-            prometheus-data:
-            grafana-data:
-            jenkins-data:
-            sonarqube-db-data:
-            sonarqube-data:
-            sonarqube-extensions:
-            sonarqube-logs:
+  sonarqube:
+    image: sonarqube:25.12.0.117093-community
+    container_name: sonarqube
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      - SONAR_JDBC_URL=jdbc:postgresql://sonarqube-db:5432/sonarqube
+      - SONAR_JDBC_USERNAME=sonarqube
+      - SONAR_JDBC_PASSWORD=sonarqube
+    volumes:
+      - sonarqube-data:/opt/sonarqube/data
+      - sonarqube-extensions:/opt/sonarqube/extensions
+      - sonarqube-logs:/opt/sonarqube/logs
+    depends_on:
+      - sonarqube-db
+    networks:
+      - blog-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9000/api/system/status | grep -q UP || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
 
-          networks:
-            blog-network:
-              driver: bridge
+volumes:
+  mongo-data:
+  vault-data:
+  vault-audit:
+  prometheus-data:
+  grafana-data:
+  jenkins-data:
+  sonarqube-db-data:
+  sonarqube-data:
+  sonarqube-extensions:
+  sonarqube-logs:
+
+networks:
+  blog-network:
+    driver: bridge
 EOF
 
 # ── Step 1: Bring up MongoDB and wait for FULL initialization ──
 docker compose -f docker-compose.prod.yaml up -d db
 
-# Wait for MongoDB to finish init (creates root user, runs init scripts, restarts with auth).
-# A simple ping succeeds too early (before the auth restart). Instead, wait for
-# authenticated ping to work, which proves init is fully complete.
 echo "⏳ Waiting for MongoDB to fully initialize..."
 RETRIES=0
 until docker exec mongodb mongosh \\
@@ -510,7 +543,7 @@ until docker exec mongodb mongosh \\
 done
 echo "✅ MongoDB is ready (authenticated)"
 
-# Ensure the blogapi app user exists (idempotent — safe to run every deploy)
+# Ensure blogapi user exists (idempotent)
 docker exec mongodb mongosh \\
     -u "\${MONGO_ROOT_USER}" -p "\${MONGO_ROOT_PASSWORD}" \\
     --authenticationDatabase admin --quiet --eval "
@@ -524,10 +557,13 @@ docker exec mongodb mongosh \\
         }
     "
 
-# ── Step 2: Bring up all remaining services ──
-# SonarQube requires higher vm.max_map_count
+# ── Step 2: Bring up remaining services ──
+# jenkins is intentionally excluded — it is the container running this
+# pipeline and must not be restarted mid-deploy.
 sudo sysctl -w vm.max_map_count=524288 2>/dev/null || true
-    if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans db vault app myblog prometheus grafana sonarqube-db sonarqube; then
+
+if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans \
+        db vault app myblog prometheus grafana sonarqube-db sonarqube; then
     echo "Deploy failed — capturing diagnostics..."
     echo "--- api_container logs ---"
     docker logs api_container 2>&1 | tail -50 || true
@@ -537,7 +573,8 @@ sudo sysctl -w vm.max_map_count=524288 2>/dev/null || true
     docker logs vault 2>&1 | tail -20 || true
     echo "--- Rolling back ---"
     [ -f docker-compose.prod.yaml.bak ] && mv docker-compose.prod.yaml.bak docker-compose.prod.yaml
-    docker compose -f docker-compose.prod.yaml up -d --remove-orphans db vault app myblog prometheus grafana sonarqube-db sonarqube
+    docker compose -f docker-compose.prod.yaml up -d --remove-orphans \
+        db vault app myblog prometheus grafana sonarqube-db sonarqube
     exit 1
 fi
 
@@ -558,11 +595,11 @@ fi
 
 docker image prune -f
 EOSSH
-                    """
+                        """
+                    }
                 }
             }
         }
-    }
     }
 
     post {
@@ -577,9 +614,7 @@ EOSSH
             echo "❌ Deploy failed — check the logs above for diagnostics"
         }
         always {
-            // Clean up Docker login credentials from the Jenkins agent
             sh 'docker logout || true'
         }
     }
 }
-
