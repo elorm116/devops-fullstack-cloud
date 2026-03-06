@@ -31,9 +31,9 @@ RUN install -m 0755 -d /etc/apt/keyrings && \
       docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Node.js 20.x LTS ────────────────────────────────────────────────────────
+# ── Node.js 20.x LTS (npm bundled inside nodejs package) ────────────────────
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+    apt-get update && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # ── kubectl (multi-arch) ────────────────────────────────────────────────────
@@ -41,13 +41,12 @@ RUN KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt) && \
     ARCH=$(dpkg --print-architecture) && \
     curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" && \
     install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && \
-    rm kubectl && \
-    kubectl version --client
+    rm kubectl
 
-# ── Helm v3 (latest stable) ─────────────────────────────────────────────────
+# ── Helm v3 ─────────────────────────────────────────────────────────────────
 RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-# ── Terraform (latest from HashiCorp repo) ──────────────────────────────────
+# ── Terraform ───────────────────────────────────────────────────────────────
 RUN curl -fsSL https://apt.releases.hashicorp.com/gpg | \
         gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
