@@ -31,8 +31,8 @@ RUN install -m 0755 -d /etc/apt/keyrings && \
       docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Node.js 20.x LTS (npm bundled inside nodejs package) ────────────────────
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+# ── Node.js 24.x LTS (npm is bundled inside nodejs – do NOT install separate npm) ──
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get update && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
