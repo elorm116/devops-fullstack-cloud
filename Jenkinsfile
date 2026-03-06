@@ -555,6 +555,7 @@ EOSSH
             }
         }
     }
+    }
 
     post {
         success {
@@ -573,4 +574,4 @@ EOSSH
         }
     }
 }
-}
+
