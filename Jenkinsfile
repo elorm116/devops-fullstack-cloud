@@ -93,7 +93,7 @@ pipeline {
                                     -e SONAR_TOKEN="$SONAR_TOKEN" \
                                     -e SONAR_HOST_URL="http://${SERVER_HOST}:9000" \
                                     -v "$(pwd):/usr/src" \
-                                    sonarsource/sonar-scanner-cli:latest
+                                    sonarsource/sonar-scanner-cli:latest \
                                     -Dproject.settings=/usr/src/sonar-project.properties
                             '''
                         }
