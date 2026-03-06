@@ -204,26 +204,19 @@ pipeline {
         // ── Stage 8: Build & Push Frontend ───────────────────────────────────
         stage('Build & Push Frontend') {
             steps {
-                script {
-                    def buildDate    = env.BUILD_DATE
-                    def fullSha      = env.FULL_SHA
-                    def versionTag   = env.VERSION_TAG
-                    def feTags       = env.FE_TAGS
-                    def googleClient = env.GOOGLE_CLIENT_ID
-                    sh """
-                        docker buildx build \\
-                            --builder multiarch \\
-                            --platform linux/amd64,linux/arm64 \\
-                            --target production \\
-                            --build-arg BUILD_DATE="${buildDate}" \\
-                            --build-arg VCS_REF="${fullSha}" \\
-                            --build-arg VERSION="${versionTag}" \\
-                            --build-arg REACT_APP_GOOGLE_CLIENT_ID="${googleClient}" \\
-                            \$(echo "${feTags}" | tr ',' '\\n' | sed 's/^/-t /') \\
-                            --push \\
-                            ./myblog
-                    """
-                }
+                sh '''
+                    docker buildx build \
+                        --builder multiarch \
+                        --platform linux/amd64,linux/arm64 \
+                        --target production \
+                        --build-arg BUILD_DATE="$BUILD_DATE" \
+                        --build-arg VCS_REF="$FULL_SHA" \
+                        --build-arg VERSION="$VERSION_TAG" \
+                        --build-arg REACT_APP_GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" \
+                        $(echo "$FE_TAGS" | tr ',' '\n' | sed 's/^/-t /') \
+                        --push \
+                        ./myblog
+                '''
             }
         }
 
@@ -244,74 +237,53 @@ pipeline {
         stage('Deploy') {
             steps {
                 sshagent(['SERVER_SSH_KEY']) {
-                    script {
-                        def apiImage      = env.API_IMAGE
-                        def frontendImage = env.FRONTEND_IMAGE
-                        def serverDir     = env.SERVER_DIR
-                        def serverUser    = env.SERVER_USER
-                        def serverHost    = env.SERVER_HOST
-                        def frontendPort  = env.FRONTEND_PORT
-                        def grafanaPort   = env.GRAFANA_PORT
-                        def dockerUser    = env.DOCKERHUB_USER
-                        def dockerToken   = env.DOCKERHUB_TOKEN
-                        def jwtSecret     = env.JWT_SECRET
-                        def grafanaUser   = env.GRAFANA_ADMIN_USER
-                        def grafanaPass   = env.GRAFANA_ADMIN_PASSWORD
-                        def vaultRoleId   = env.VAULT_ROLE_ID
-                        def vaultSecretId = env.VAULT_SECRET_ID
-                        def mongoRootUser = env.MONGO_ROOT_USER
-                        def mongoRootPass = env.MONGO_ROOT_PASSWORD
-                        def mongoAppPass  = env.MONGO_APP_PASSWORD
-                        def corsOrigin    = env.CORS_ORIGIN
-                        def googleClient  = env.GOOGLE_CLIENT_ID
-
-                        sh """
-                            ssh -o StrictHostKeyChecking=no ${serverUser}@${serverHost} \\
-                                API_IMAGE="${apiImage}" \\
-                                FRONTEND_IMAGE="${frontendImage}" \\
-                                SERVER_DIR="${serverDir}" \\
-                                FRONTEND_PORT="${frontendPort}" \\
-                                GRAFANA_PORT="${grafanaPort}" \\
-                                DOCKERHUB_USER="${dockerUser}" \\
-                                DOCKERHUB_TOKEN="${dockerToken}" \\
-                                JWT_SECRET="${jwtSecret}" \\
-                                GRAFANA_ADMIN_USER="${grafanaUser}" \\
-                                GRAFANA_ADMIN_PASSWORD="${grafanaPass}" \\
-                                VAULT_ROLE_ID="${vaultRoleId}" \\
-                                VAULT_SECRET_ID="${vaultSecretId}" \\
-                                MONGO_ROOT_USER="${mongoRootUser}" \\
-                                MONGO_ROOT_PASSWORD="${mongoRootPass}" \\
-                                MONGO_APP_PASSWORD="${mongoAppPass}" \\
-                                CORS_ORIGIN="${corsOrigin}" \\
-                                GOOGLE_CLIENT_ID="${googleClient}" \\
-                                bash -s << 'EOSSH'
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_HOST \
+                            API_IMAGE="$API_IMAGE" \
+                            FRONTEND_IMAGE="$FRONTEND_IMAGE" \
+                            SERVER_DIR="$SERVER_DIR" \
+                            FRONTEND_PORT="$FRONTEND_PORT" \
+                            GRAFANA_PORT="$GRAFANA_PORT" \
+                            DOCKERHUB_USER="$DOCKERHUB_USER" \
+                            DOCKERHUB_TOKEN="$DOCKERHUB_TOKEN" \
+                            JWT_SECRET="$JWT_SECRET" \
+                            GRAFANA_ADMIN_USER="$GRAFANA_ADMIN_USER" \
+                            GRAFANA_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD" \
+                            VAULT_ROLE_ID="$VAULT_ROLE_ID" \
+                            VAULT_SECRET_ID="$VAULT_SECRET_ID" \
+                            MONGO_ROOT_USER="$MONGO_ROOT_USER" \
+                            MONGO_ROOT_PASSWORD="$MONGO_ROOT_PASSWORD" \
+                            MONGO_APP_PASSWORD="$MONGO_APP_PASSWORD" \
+                            CORS_ORIGIN="$CORS_ORIGIN" \
+                            GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" \
+                            bash -s << 'EOSSH'
 set -euo pipefail
 
 # Fail loudly if critical secrets are missing
-: "\${JWT_SECRET:?JWT_SECRET is not set}"
-: "\${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is not set}"
-: "\${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is not set}"
-: "\${MONGO_ROOT_USER:?MONGO_ROOT_USER is not set}"
-: "\${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is not set}"
-: "\${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is not set}"
-: "\${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is not set}"
+: "${JWT_SECRET:?JWT_SECRET is not set}"
+: "${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is not set}"
+: "${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is not set}"
+: "${MONGO_ROOT_USER:?MONGO_ROOT_USER is not set}"
+: "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is not set}"
+: "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is not set}"
+: "${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is not set}"
 
 # Vault creds are optional on first deploy
-if [ -z "\${VAULT_ROLE_ID:-}" ] || [ "\$VAULT_ROLE_ID" = "placeholder" ]; then
+if [ -z "${VAULT_ROLE_ID:-}" ] || [ "$VAULT_ROLE_ID" = "placeholder" ]; then
     echo "⚠️  VAULT_ROLE_ID not set — Vault features disabled."
 fi
 
-echo "\$DOCKERHUB_TOKEN" | docker login -u "\$DOCKERHUB_USER" --password-stdin
+echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
 
-mkdir -p "\$SERVER_DIR" && cd "\$SERVER_DIR"
+mkdir -p "$SERVER_DIR" && cd "$SERVER_DIR"
 
-docker pull "\$API_IMAGE"
-docker pull "\$FRONTEND_IMAGE"
-docker pull "\${DOCKERHUB_USER}/jenkins-docker:latest" || echo "⚠️  jenkins-docker not yet pushed — using existing container"
+docker pull "$API_IMAGE"
+docker pull "$FRONTEND_IMAGE"
+docker pull "${DOCKERHUB_USER}/jenkins-docker:latest" || echo "⚠️  jenkins-docker not yet pushed — using existing container"
 
-API_DIGEST=\$(docker inspect --format='{{index .RepoDigests 0}}' "\$API_IMAGE")
-FRONTEND_DIGEST=\$(docker inspect --format='{{index .RepoDigests 0}}' "\$FRONTEND_IMAGE")
-JENKINS_DIGEST=\$(docker inspect --format='{{index .RepoDigests 0}}' "\${DOCKERHUB_USER}/jenkins-docker:latest" 2>/dev/null || echo "\${DOCKERHUB_USER}/jenkins-docker:latest")
+API_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$API_IMAGE")
+FRONTEND_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$FRONTEND_IMAGE")
+JENKINS_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${DOCKERHUB_USER}/jenkins-docker:latest" 2>/dev/null || echo "${DOCKERHUB_USER}/jenkins-docker:latest")
 
 [ -f docker-compose.prod.yaml ] && cp docker-compose.prod.yaml docker-compose.prod.yaml.bak
 
@@ -324,9 +296,9 @@ services:
     container_name: mongodb
     restart: unless-stopped
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=\${MONGO_ROOT_USER}
-      - MONGO_INITDB_ROOT_PASSWORD=\${MONGO_ROOT_PASSWORD}
-      - MONGO_APP_PASSWORD=\${MONGO_APP_PASSWORD}
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+      - MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD}
     volumes:
       - mongo-data:/data/db
       - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
@@ -370,19 +342,19 @@ services:
       - blog-network
 
   app:
-    image: \${API_DIGEST}
+    image: ${API_DIGEST}
     container_name: api_container
     restart: unless-stopped
     environment:
       - NODE_ENV=production
       - PORT=4000
-      - MONGO_URI=mongodb://blogapi:\${MONGO_APP_PASSWORD}@db:27017/blog?authSource=blog
-      - JWT_SECRET=\${JWT_SECRET}
-      - CORS_ORIGIN=\${CORS_ORIGIN}
+      - MONGO_URI=mongodb://blogapi:${MONGO_APP_PASSWORD}@db:27017/blog?authSource=blog
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ORIGIN=${CORS_ORIGIN}
       - VAULT_ADDR=http://vault:8200
-      - VAULT_ROLE_ID=\${VAULT_ROLE_ID}
-      - VAULT_SECRET_ID=\${VAULT_SECRET_ID}
-      - GOOGLE_CLIENT_ID=\${GOOGLE_CLIENT_ID}
+      - VAULT_ROLE_ID=${VAULT_ROLE_ID}
+      - VAULT_SECRET_ID=${VAULT_SECRET_ID}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
     expose:
       - "4000"
     depends_on:
@@ -398,18 +370,18 @@ services:
       - blog-network
 
   myblog:
-    image: \${FRONTEND_DIGEST}
+    image: ${FRONTEND_DIGEST}
     container_name: myblog_container
     restart: unless-stopped
     ports:
-      - "\${FRONTEND_PORT}:80"
+      - "${FRONTEND_PORT}:80"
     depends_on:
       - app
     networks:
       - blog-network
 
   jenkins:
-    image: \${JENKINS_DIGEST}
+    image: ${JENKINS_DIGEST}
     container_name: jenkins
     restart: unless-stopped
     user: root
@@ -449,14 +421,14 @@ services:
     container_name: grafana
     restart: unless-stopped
     ports:
-      - "\${GRAFANA_PORT}:3000"
+      - "${GRAFANA_PORT}:3000"
     volumes:
       - ./monitoring/grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./monitoring/grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - grafana-data:/var/lib/grafana
     environment:
-      - GF_SECURITY_ADMIN_USER=\${GRAFANA_ADMIN_USER}
-      - GF_SECURITY_ADMIN_PASSWORD=\${GRAFANA_ADMIN_PASSWORD}
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
     depends_on:
       - prometheus
@@ -529,12 +501,12 @@ docker compose -f docker-compose.prod.yaml up -d db
 
 echo "⏳ Waiting for MongoDB to fully initialize..."
 RETRIES=0
-until docker exec mongodb mongosh \\
-    -u "\${MONGO_ROOT_USER}" -p "\${MONGO_ROOT_PASSWORD}" \\
-    --authenticationDatabase admin --quiet \\
+until docker exec mongodb mongosh \
+    -u "${MONGO_ROOT_USER}" -p "${MONGO_ROOT_PASSWORD}" \
+    --authenticationDatabase admin --quiet \
     --eval "db.adminCommand('ping')" >/dev/null 2>&1; do
-    RETRIES=\$((RETRIES + 1))
-    if [ "\$RETRIES" -ge 30 ]; then
+    RETRIES=$((RETRIES + 1))
+    if [ "$RETRIES" -ge 30 ]; then
         echo "❌ MongoDB did not become ready in time"
         docker logs mongodb 2>&1 | tail -40
         exit 1
@@ -544,13 +516,13 @@ done
 echo "✅ MongoDB is ready (authenticated)"
 
 # Ensure blogapi user exists (idempotent)
-docker exec mongodb mongosh \\
-    -u "\${MONGO_ROOT_USER}" -p "\${MONGO_ROOT_PASSWORD}" \\
+docker exec mongodb mongosh \
+    -u "${MONGO_ROOT_USER}" -p "${MONGO_ROOT_PASSWORD}" \
     --authenticationDatabase admin --quiet --eval "
         const blog = db.getSiblingDB('blog');
         const existing = blog.getUsers().users.find(u => u.user === 'blogapi');
         if (!existing) {
-            blog.createUser({ user: 'blogapi', pwd: '\${MONGO_APP_PASSWORD}', roles: [{ role: 'readWrite', db: 'blog' }] });
+            blog.createUser({ user: 'blogapi', pwd: '${MONGO_APP_PASSWORD}', roles: [{ role: 'readWrite', db: 'blog' }] });
             print('✅ Created blogapi user');
         } else {
             print('ℹ️  blogapi user already exists');
@@ -578,25 +550,24 @@ if ! docker compose -f docker-compose.prod.yaml up -d --remove-orphans \
     exit 1
 fi
 
-VAULT_STATUS=\$(docker exec vault wget -qO- http://127.0.0.1:8200/v1/sys/seal-status 2>/dev/null || echo '{}')
-INITIALIZED=\$(echo "\$VAULT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('initialized', False))" 2>/dev/null || echo "False")
-SEALED=\$(echo "\$VAULT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sealed', True))" 2>/dev/null || echo "True")
+VAULT_STATUS=$(docker exec vault wget -qO- http://127.0.0.1:8200/v1/sys/seal-status 2>/dev/null || echo '{}')
+INITIALIZED=$(echo "$VAULT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('initialized', False))" 2>/dev/null || echo "False")
+SEALED=$(echo "$VAULT_STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sealed', True))" 2>/dev/null || echo "True")
 
 echo ""
-if [ "\$INITIALIZED" = "False" ]; then
+if [ "$INITIALIZED" = "False" ]; then
     echo "⚠️  Vault is NOT initialized."
-    echo "   SSH in and run: cd \$SERVER_DIR && bash scripts/vault-init.sh"
-elif [ "\$SEALED" = "True" ]; then
+    echo "   SSH in and run: cd $SERVER_DIR && bash scripts/vault-init.sh"
+elif [ "$SEALED" = "True" ]; then
     echo "⚠️  Vault is sealed."
-    echo "   SSH in and run: cd \$SERVER_DIR && bash scripts/vault-unseal.sh"
+    echo "   SSH in and run: cd $SERVER_DIR && bash scripts/vault-unseal.sh"
 else
     echo "✅ Vault is initialized and unsealed."
 fi
 
 docker image prune -f
 EOSSH
-                        """
-                    }
+                    '''
                 }
             }
         }
