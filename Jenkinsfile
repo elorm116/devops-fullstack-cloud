@@ -88,7 +88,7 @@ pipeline {
                     try {
                         withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
                             sh '''
-                                docker run --rm \
+                                docker run --rm --platform linux/amd64 \
                                     --network dockerize_blog-network \
                                     -e SONAR_TOKEN="$SONAR_TOKEN" \
                                     -e SONAR_HOST_URL="http://${SERVER_HOST}:9000" \
