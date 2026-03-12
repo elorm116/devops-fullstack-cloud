@@ -92,7 +92,7 @@ jobs:
         if: matrix.component == 'api'
         uses: docker/build-push-action@v6
         with:
-          context: .api
+          context: ./api
           file: ./api/Dockerfile
           target: production
           platforms: linux/amd64,linux/arm64
