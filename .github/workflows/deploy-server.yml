@@ -109,7 +109,7 @@ jobs:
         if: matrix.component == 'frontend'
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./myblog
           file: ./myblog/Dockerfile
           target: production
           platforms: linux/amd64,linux/arm64
