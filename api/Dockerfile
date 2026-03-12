@@ -47,8 +47,7 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
 ENV NODE_ENV=production
 
 # Install only production deps + clean cache to save space
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --omit=dev && \
+RUN npm ci --omit=dev && \
     npm cache clean --force
 
 COPY . .
