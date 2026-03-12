@@ -1,6 +1,6 @@
 // api/services/vault.js
-// Vault Transit client — handles AppRole auth, token renewal, and PII encrypt/decrypt.
-// The API never holds the encryption key itself; Vault handles all crypto operations.
+// Vault Transit client — handles AppRole auth, token renewal, PII encrypt/decrypt,
+// and dynamic MongoDB credential fetching from the database secrets engine.
 //
 // Auth modes:
 //   Production: AppRole (VAULT_ROLE_ID + VAULT_SECRET_ID) → short-lived token
@@ -17,12 +17,17 @@ class VaultClient {
     this.keyName = 'pii-encryption';
     this.tokenExpiry = null;
 
-    // In dev mode, VAULT_TOKEN provides a static root token directly.
-    // In production, AppRole credentials are required.
+    // MongoDB static role name in Vault
+    this.mongoStaticRole = process.env.VAULT_MONGO_ROLE || 'blogapi-static';
+    this.mongoHost = process.env.MONGO_HOST || 'db';
+    this.mongoPort = process.env.MONGO_PORT || '27017';
+    this.mongoDb = process.env.MONGO_DB || 'blog';
+    this.mongoAuthSource = process.env.MONGO_AUTH_SOURCE || 'blog';
+
     const staticToken = process.env.VAULT_TOKEN;
     if (staticToken) {
       this.token = staticToken;
-      this.tokenExpiry = Infinity; // Static token — never expires
+      this.tokenExpiry = Infinity;
       this.configured = true;
       console.log('[Vault] Using static VAULT_TOKEN (dev mode)');
     } else if (this.roleId && this.secretId && this.roleId !== 'placeholder' && this.secretId !== 'placeholder') {
@@ -85,61 +90,92 @@ class VaultClient {
     });
 
     this.token = response.auth.client_token;
-    // Renew token 5 minutes before it expires
     const ttl = response.auth.lease_duration;
     this.tokenExpiry = Date.now() + (ttl - 300) * 1000;
-
     console.log(`[Vault] Authenticated via AppRole. Token valid for ${ttl}s`);
   }
 
   // ─── Token Management ────────────────────────────────────────────────────────
   async _ensureToken() {
-    // Static token never expires (dev mode)
     if (this.tokenExpiry === Infinity) return;
     if (!this.token || Date.now() >= this.tokenExpiry) {
       await this._authenticate();
     }
   }
 
+  // ─── MongoDB Credentials ─────────────────────────────────────────────────────
+  // Fetches current credentials for the blogapi static role from Vault.
+  // Falls back to MONGO_URI env var if Vault database engine is not configured.
+  async getMongoUri() {
+    if (!this.configured) {
+      const fallback = process.env.MONGO_URI;
+      if (fallback) {
+        console.log('[Vault] Database engine not configured — using MONGO_URI env var');
+        return fallback;
+      }
+      throw new Error('No MongoDB URI available: Vault not configured and MONGO_URI not set');
+    }
+
+    try {
+      await this._ensureToken();
+
+      const response = await this._request(
+        'GET',
+        `/v1/database/static-creds/${this.mongoStaticRole}`
+      );
+
+      const { username, password } = response.data;
+      const uri = `mongodb://${username}:${encodeURIComponent(password)}@${this.mongoHost}:${this.mongoPort}/${this.mongoDb}?authSource=${this.mongoAuthSource}`;
+
+      console.log(`[Vault] MongoDB credentials fetched for role: ${this.mongoStaticRole}`);
+      return uri;
+    } catch (err) {
+      // Graceful fallback if database engine not yet set up
+      if (
+        err.message.includes('no handler') ||
+        err.message.includes('invalid role') ||
+        err.message.includes('unknown role')
+      ) {
+        const fallback = process.env.MONGO_URI;
+        if (fallback) {
+          console.warn(`[Vault] Database engine unavailable (${err.message}) — falling back to MONGO_URI env var`);
+          return fallback;
+        }
+      }
+      throw err;
+    }
+  }
+
   // ─── Encrypt a single value ──────────────────────────────────────────────────
-  // plaintext: string value to encrypt
-  // returns: vault ciphertext string (e.g. "vault:v1:abc123...")
   async encrypt(plaintext) {
-    if (!this.configured) return plaintext; // pass through when Vault not configured
+    if (!this.configured) return plaintext;
     await this._ensureToken();
 
     const encoded = Buffer.from(String(plaintext)).toString('base64');
     const response = await this._request('POST', `/v1/transit/encrypt/${this.keyName}`, {
       plaintext: encoded,
     });
-
     return response.data.ciphertext;
   }
 
   // ─── Decrypt a single value ──────────────────────────────────────────────────
-  // ciphertext: vault ciphertext string
-  // returns: original plaintext string
   async decrypt(ciphertext) {
-    if (!this.configured) return ciphertext; // pass through when Vault not configured
+    if (!this.configured) return ciphertext;
     await this._ensureToken();
 
     if (!ciphertext || !ciphertext.startsWith('vault:')) {
-      // Not a vault ciphertext — return as-is (handles migration period)
       return ciphertext;
     }
 
     const response = await this._request('POST', `/v1/transit/decrypt/${this.keyName}`, {
       ciphertext,
     });
-
     return Buffer.from(response.data.plaintext, 'base64').toString('utf8');
   }
 
   // ─── Batch encrypt ───────────────────────────────────────────────────────────
-  // values: array of strings
-  // returns: array of ciphertext strings in the same order
   async encryptBatch(values) {
-    if (!this.configured) return values; // pass through when Vault not configured
+    if (!this.configured) return values;
     await this._ensureToken();
 
     const batchInput = values.map((v) => ({
@@ -157,13 +193,10 @@ class VaultClient {
   }
 
   // ─── Batch decrypt ───────────────────────────────────────────────────────────
-  // ciphertexts: array of vault ciphertext strings
-  // returns: array of plaintext strings in the same order
   async decryptBatch(ciphertexts) {
-    if (!this.configured) return ciphertexts; // pass through when Vault not configured
+    if (!this.configured) return ciphertexts;
     await this._ensureToken();
 
-    // Filter out non-vault values and track their positions
     const vaultEntries = [];
     const results = new Array(ciphertexts.length);
 
@@ -171,7 +204,7 @@ class VaultClient {
       if (ct && ct.startsWith('vault:')) {
         vaultEntries.push({ index: i, ciphertext: ct });
       } else {
-        results[i] = ct; // pass through unencrypted values
+        results[i] = ct;
       }
     });
 
@@ -191,20 +224,16 @@ class VaultClient {
   }
 
   // ─── Rewrap ciphertext to latest key version ─────────────────────────────────
-  // Used after key rotation to re-encrypt old ciphertext with the new key version.
-  // ciphertext: existing vault ciphertext
-  // returns: new ciphertext encrypted with the latest key version
   async rewrap(ciphertext) {
     await this._ensureToken();
 
     const response = await this._request('POST', `/v1/transit/rewrap/${this.keyName}`, {
       ciphertext,
     });
-
     return response.data.ciphertext;
   }
 
-  // Health check — verify Vault is reachable and unsealed
+  // ─── Health check ────────────────────────────────────────────────────────────
   async healthCheck() {
     try {
       const response = await this._request('GET', '/v1/sys/health');

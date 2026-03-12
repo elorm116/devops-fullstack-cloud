@@ -16,7 +16,7 @@ const { verifyGoogleToken } = require('./services/oauth');
 const app = express();
 
 // ─── Security middleware ─────────────────────────────────────────────────────
-app.set('trust proxy', 1); // Trust first proxy for correct IP logging (if behind a proxy)
+app.set('trust proxy', 1);
 app.use(helmet());
 app.use(express.json({ limit: '16kb' }));
 
@@ -46,8 +46,6 @@ const authLimiter = rateLimit({
 });
 
 // ─── Internal-only middleware ────────────────────────────────────────────────
-// Allows localhost and Docker bridge-network IPs (Prometheus scrapes /metrics
-// from a sibling container whose source IP is on the 172.x or 10.x subnet).
 const PRIVATE_IP_RE = /^(::ffff:)?(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/;
 const internalOnly = (req, res, next) => {
   const ip = req.ip || req.connection.remoteAddress;
@@ -58,22 +56,26 @@ const internalOnly = (req, res, next) => {
 };
 
 // ─── Config ──────────────────────────────────────────────────────────────────
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/blog';
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
   console.error('FATAL: JWT_SECRET environment variable is required');
   process.exit(1);
 }
 
-mongoose
-  .connect(MONGO_URI, {
-    serverSelectionTimeoutMS: 30000,
-  })
-  .then(() => console.log('DB Connected'))
-  .catch((err) => {
-    console.error('DB connection error:', err.message);
+// ─── Database Connection ─────────────────────────────────────────────────────
+// Fetches MongoDB credentials from Vault database engine.
+// Falls back to MONGO_URI env var if Vault database engine is not configured.
+async function connectDatabase() {
+  const vault = getVaultClient();
+  try {
+    const mongoUri = await vault.getMongoUri();
+    await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 30000 });
+    console.log('[DB] Connected to MongoDB');
+  } catch (err) {
+    console.error('[DB] Connection error:', err.message);
     process.exit(1);
-  });
+  }
+}
 
 // ─── Prometheus Metrics ──────────────────────────────────────────────────────
 client.collectDefaultMetrics();
@@ -113,8 +115,6 @@ const postSchema = Joi.object({
 });
 
 // ─── Health / Metrics ────────────────────────────────────────────────────────
-
-// Internal only — Prometheus scrapes this, should never be public
 app.get('/metrics', internalOnly, async (_req, res) => {
   try {
     res.set('Content-Type', client.register.contentType);
@@ -124,10 +124,8 @@ app.get('/metrics', internalOnly, async (_req, res) => {
   }
 });
 
-// Public — used by Docker healthcheck
 app.get('/health', (_req, res) => res.status(200).json({ status: 'ok' }));
 
-// Internal only — leaks infrastructure info
 app.get('/health/vault', internalOnly, async (_req, res) => {
   try {
     const vault = getVaultClient();
@@ -174,7 +172,6 @@ app.post('/api/login', authLimiter, async (req, res) => {
     const { username, password } = value;
     const user = await User.findOne({ username });
 
-    // Prevent Google SSO users from logging in with a password
     if (user && user.authProvider === 'google') {
       return res.status(400).json({
         message: 'This account uses Google Sign-In. Please use the Google button to log in.',
@@ -201,15 +198,12 @@ app.post('/api/auth/google', authLimiter, async (req, res) => {
       return res.status(400).json({ message: 'Google ID token is required' });
     }
 
-    // Verify the token with Google
     const googleUser = await verifyGoogleToken(idToken);
     const { googleId, email, name, picture } = googleUser;
 
-    // Check if user already exists by Google ID
     let user = await User.findOne({ googleId });
 
     if (!user) {
-      // Check if a local account already has this email
       const emailConflict = await User.findOne({ email });
       if (emailConflict) {
         return res.status(409).json({
@@ -217,7 +211,6 @@ app.post('/api/auth/google', authLimiter, async (req, res) => {
         });
       }
 
-      // Auto-create account — generate a unique username from their Google name
       let baseUsername = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20) || 'user';
       let username = baseUsername;
       let suffix = 1;
@@ -238,7 +231,6 @@ app.post('/api/auth/google', authLimiter, async (req, res) => {
       console.log(`[SSO] Auto-created Google account for ${email} as @${username}`);
     }
 
-    // Issue your app's JWT — same as regular login from here on
     const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, username: user.username });
   } catch (e) {
@@ -259,7 +251,6 @@ app.get('/api/me', auth, async (req, res) => {
     const user = await User.findById(req.userData.userId).select('-password');
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    // Return only the fields the frontend needs
     res.json({
       username: user.username,
       email: user.email || null,
@@ -335,42 +326,47 @@ app.use((err, _req, res, _next) => {
 
 // ─── Start Server ────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
-const server = app.listen(PORT, async () => {
-  console.log(`Server running on ${PORT}`);
 
-  // Verify Vault connectivity on startup (non-blocking)
-  try {
-    const vault = getVaultClient();
-    const status = await vault.healthCheck();
-    if (status.ok) {
-      console.log(`[Vault] Connected — version ${status.version}, sealed=${status.sealed}`);
-    } else {
-      console.warn(`[Vault] Unreachable on startup: ${status.error}`);
-    }
-  } catch (err) {
-    console.warn(`[Vault] Not configured or unreachable: ${err.message}`);
-  }
-});
+(async () => {
+  // Connect to MongoDB first — fetches credentials from Vault, falls back to MONGO_URI
+  await connectDatabase();
 
-// ─── Graceful Shutdown ───────────────────────────────────────────────────────
-function gracefulShutdown(signal) {
-  console.log(`\n${signal} received — shutting down gracefully...`);
-  server.close(async () => {
+  const server = app.listen(PORT, async () => {
+    console.log(`Server running on ${PORT}`);
+
+    // Verify Vault connectivity on startup (non-blocking)
     try {
-      await mongoose.connection.close();
-      console.log('MongoDB connection closed.');
+      const vault = getVaultClient();
+      const status = await vault.healthCheck();
+      if (status.ok) {
+        console.log(`[Vault] Connected — version ${status.version}, sealed=${status.sealed}`);
+      } else {
+        console.warn(`[Vault] Unreachable on startup: ${status.error}`);
+      }
     } catch (err) {
-      console.error('Error closing MongoDB connection:', err.message);
+      console.warn(`[Vault] Not configured or unreachable: ${err.message}`);
     }
-    process.exit(0);
   });
 
-  // Force exit after 10 seconds if graceful shutdown fails
-  setTimeout(() => {
-    console.error('Forced shutdown — timeout exceeded');
-    process.exit(1);
-  }, 10000);
-}
+  // ─── Graceful Shutdown ───────────────────────────────────────────────────────
+  function gracefulShutdown(signal) {
+    console.log(`\n${signal} received — shutting down gracefully...`);
+    server.close(async () => {
+      try {
+        await mongoose.connection.close();
+        console.log('MongoDB connection closed.');
+      } catch (err) {
+        console.error('Error closing MongoDB connection:', err.message);
+      }
+      process.exit(0);
+    });
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    setTimeout(() => {
+      console.error('Forced shutdown — timeout exceeded');
+      process.exit(1);
+    }, 10000);
+  }
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+})();
