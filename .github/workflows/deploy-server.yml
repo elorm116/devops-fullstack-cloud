@@ -214,7 +214,7 @@ jobs:
           : "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is not set}"
           : "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is not set}"
           : "${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is not set}"
-
+          : "${BLIND_INDEX_PEPPER:?BLIND_INDEX_PEPPER is not set}"
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
           mkdir -p "$SERVER_DIR" && cd "$SERVER_DIR"
 
@@ -276,6 +276,7 @@ jobs:
                 - VAULT_ROLE_ID=${VAULT_ROLE_ID}
                 - VAULT_SECRET_ID=${VAULT_SECRET_ID}
                 - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+                - BLIND_INDEX_PEPPER=${BLIND_INDEX_PEPPER}
               depends_on:
                 - db
                 - vault
