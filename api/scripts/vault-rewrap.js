@@ -19,7 +19,7 @@ const User = require('../models/User');
 // const Post = require('../models/Post');
 
 const MODELS_WITH_PII = [
-  { model: User, fields: ['email', 'fullName'] },
+  { model: User, fields: ['email', 'fullName', 'phone', 'creditCard'] },
   // { model: Post, fields: ['authorEmail'] },
 ];
 
