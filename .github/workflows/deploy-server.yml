@@ -148,7 +148,7 @@ jobs:
           tags: tag:ci
 
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v5
+        uses: SonarSource/sonarqube-scan-action@v6
         continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -270,7 +270,6 @@ jobs:
               environment:
                 - NODE_ENV=production
                 - PORT=4000
-                - MONGO_URI=mongodb://blogapi:${MONGO_APP_PASSWORD}@db:27017/blog?authSource=blog
                 - JWT_SECRET=${JWT_SECRET}
                 - CORS_ORIGIN=${CORS_ORIGIN}
                 - VAULT_ADDR=http://vault:8200
