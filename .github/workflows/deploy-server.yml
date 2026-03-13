@@ -185,6 +185,7 @@ jobs:
           MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
           CORS_ORIGIN: ${{ secrets.CORS_ORIGIN }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          BLIND_INDEX_PEPPER: ${{ secrets.BLIND_INDEX_PEPPER }}
         run: |
           ssh -i ~/.ssh/id_ed25519 "$SERVER_USER@$SERVER_HOST" \
             API_IMAGE="$API_IMAGE" \
@@ -204,6 +205,7 @@ jobs:
             MONGO_APP_PASSWORD="$MONGO_APP_PASSWORD" \
             CORS_ORIGIN="$CORS_ORIGIN" \
             GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" \
+            BLIND_INDEX_PEPPER="$BLIND_INDEX_PEPPER" \
             bash -s << 'EOSSH'
           set -euo pipefail
 
