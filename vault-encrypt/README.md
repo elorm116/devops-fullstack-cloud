@@ -1,4 +1,4 @@
-# @mali/vault-encrypt
+# @elorm116/vault-encrypt
 
 > **Vault Transit-backed PII encryption library for Node.js**  
 > Encrypt sensitive fields before storing in MongoDB. Keys never leave HashiCorp Vault.

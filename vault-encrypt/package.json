@@ -1,5 +1,5 @@
 {
-  "name": "@mali/vault-encrypt",
+  "name": "@elorm116/vault-encrypt",
   "version": "1.0.0",
   "description": "Vault Transit-backed PII encryption library for Node.js — encrypt sensitive fields before storing in MongoDB",
   "main": "src/index.js",
