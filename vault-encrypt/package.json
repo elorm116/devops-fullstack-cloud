@@ -16,7 +16,7 @@
     "mongodb",
     "security"
   ],
-  "author": "Mali <your-email@example.com>",
+  "author": "Mali <aezottor@gmail.com>",
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
