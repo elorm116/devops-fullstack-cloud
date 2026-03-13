@@ -186,6 +186,10 @@ jobs:
           CORS_ORIGIN: ${{ secrets.CORS_ORIGIN }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           BLIND_INDEX_PEPPER: ${{ secrets.BLIND_INDEX_PEPPER }}
+          VAULT_AWS_REGION: "${{ secrets.VAULT_AWS_REGION }}"
+          VAULT_AWS_KMS_KEY_ID: "${{ secrets.VAULT_AWS_KMS_KEY_ID }}"
+          VAULT_AWS_ACCESS_KEY_ID: "${{ secrets.VAULT_AWS_ACCESS_KEY_ID }}"
+          VAULT_AWS_SECRET_KEY: "${{ secrets.VAULT_AWS_SECRET_KEY }}"
         run: |
           ssh -i ~/.ssh/id_ed25519 "$SERVER_USER@$SERVER_HOST" \
             API_IMAGE="$API_IMAGE" \
@@ -206,6 +210,11 @@ jobs:
             CORS_ORIGIN="$CORS_ORIGIN" \
             GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" \
             BLIND_INDEX_PEPPER="$BLIND_INDEX_PEPPER" \
+            VAULT_AWS_REGION="$VAULT_AWS_REGION" \
+            VAULT_AWS_KMS_KEY_ID="$VAULT_AWS_KMS_KEY_ID" \
+            VAULT_AWS_ACCESS_KEY_ID="$VAULT_AWS_ACCESS_KEY_ID" \
+            VAULT_AWS_SECRET_KEY="$VAULT_AWS_SECRET_KEY" 
+
             bash -s << 'EOSSH'
           set -euo pipefail
 
@@ -217,6 +226,11 @@ jobs:
           : "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is not set}"
           : "${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is not set}"
           : "${BLIND_INDEX_PEPPER:?BLIND_INDEX_PEPPER is not set}"
+          : "${VAULT_AWS_REGION:?VAULT_AWS_REGION is not set}"
+          : "${VAULT_AWS_KMS_KEY_ID:?VAULT_AWS_KMS_KEY_ID is not set}"
+          : "${VAULT_AWS_ACCESS_KEY_ID:?VAULT_AWS_ACCESS_KEY_ID is not set}"
+          : "${VAULT_AWS_SECRET_KEY:?VAULT_AWS_SECRET_KEY is not set}"
+
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
           mkdir -p "$SERVER_DIR" && cd "$SERVER_DIR"
 
@@ -255,6 +269,15 @@ jobs:
                   {
                     "storage": { "file": { "path": "/vault/data" } },
                     "listener": [{ "tcp": { "address": "0.0.0.0:8200", "tls_disable": true } }],
+                                        
+                    "seal": {
+                      "awskms": {
+                        "region":     "${VAULT_AWS_REGION}",
+                        "kms_key_id": "${VAULT_AWS_KMS_KEY_ID}",
+                        "access_key": "${VAULT_AWS_ACCESS_KEY_ID}",
+                        "secret_key": "${VAULT_AWS_SECRET_KEY}"
+                      }
+                    },
                     "ui": true
                   }
               command: server
