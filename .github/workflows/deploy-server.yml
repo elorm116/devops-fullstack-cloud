@@ -263,6 +263,9 @@ jobs:
               cap_add:
                 - IPC_LOCK
               environment:
+                AWS_ACCESS_KEY_ID: "${VAULT_AWS_ACCESS_KEY_ID}"
+                AWS_SECRET_ACCESS_KEY: "${VAULT_AWS_SECRET_KEY}"
+                AWS_REGION: "${VAULT_AWS_REGION}"
                 VAULT_LOCAL_CONFIG: |
                   {
                     "storage": { "file": { "path": "/vault/data" } },
@@ -271,9 +274,7 @@ jobs:
                     "seal": {
                       "awskms": {
                         "region":     "${VAULT_AWS_REGION}",
-                        "kms_key_id": "${VAULT_AWS_KMS_KEY_ID}",
-                        "access_key": "${VAULT_AWS_ACCESS_KEY_ID}",
-                        "secret_key": "${VAULT_AWS_SECRET_KEY}"
+                        "kms_key_id": "${VAULT_AWS_KMS_KEY_ID}"
                       }
                     },
                     "ui": true
@@ -281,6 +282,7 @@ jobs:
               command: server
               volumes:
                 - vault-data:/vault/data
+                - vault-audit:/vault/audit
               ports:
                 - "8200:8200"
               networks:
@@ -384,6 +386,7 @@ jobs:
           volumes:
             mongo-data:
             vault-data:
+            vault-audit:
             prometheus-data:
             grafana-data:
             jenkins-data:
