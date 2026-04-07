@@ -5,11 +5,12 @@ A production-grade blog application showcasing end-to-end DevOps practices — f
 - **API**: Node.js/Express backend with JWT auth, health checks, MongoDB
 - **Security**: HashiCorp Vault for PII encryption (Transit Secrets Engine)
 - **Frontend**: React SPA → Nginx multi-stage build
-- **CI/CD**: GitHub Actions → build, scan, push to Docker Hub, deploy via SSH
+- **CI/CD**: GitHub Actions → build, scan (SonarQube), push to Docker Hub, deploy via SSH (Tailscale)
 - **Infrastructure**: Docker Compose on Tailscale server (current), Kubernetes on Linode/AWS (planned)
 - **IaC**: Terraform provisioning (Linode LKE, AWS EKS — planned)
-- **Observability**: Prometheus + Grafana via kube-prometheus-stack (planned)
-- **GitOps**: ArgoCD (planned)
+- **Observability**: Prometheus + Grafana (Docker Compose: current; Kubernetes: planned)
+- **CI Platform (optional)**: Jenkins-in-Docker (for demos)
+- **GitOps (planned)**: ArgoCD
 
 ## Architecture
 
@@ -63,14 +64,22 @@ A production-grade blog application showcasing end-to-end DevOps practices — f
 |------|-------------|
 | `api/` | Express backend — JWT auth, health endpoint, multi-stage Dockerfile |
 | `myblog/` | React frontend — multi-stage Dockerfile (dev → build → Nginx) |
+| `monitoring/` | Prometheus config + Grafana provisioning (Compose deploy) |
 | `docker-compose.yaml` | Production compose template (used by deploy workflow) |
 | `docker-compose.dev.yaml` | Local development with hot-reloading |
+| `.env.example` | Example env vars (mostly for non-Compose runs / reference) |
 | `.github/workflows/deploy-server.yml` | CI/CD pipeline → Docker Hub → Tailscale server |
 | `.github/workflows/ci.yml.disabled` | Full CI pipeline with Trivy scans (for K8s deployment later) |
+| `sonar-project.properties` | SonarQube project config (used by deploy workflow scan step) |
+| `Dockerfile.jenkins`, `Jenkinsfile` | Jenkins image + pipeline (optional demo) |
 | `k8s/` | Kubernetes manifests (api, frontend, ingress, cert-manager) |
 | `helm/` | Helm values files (ingress-nginx, cert-manager, monitoring) |
 | `terraform/linode/` | Linode LKE cluster provisioning (IaC) |
 | `terraform/aws/` | AWS EKS provisioning (planned) |
+
+## Prerequisites
+- Docker Desktop (or Docker Engine) with `docker compose` (Compose v2)
+- For server deploy: a Tailscale tailnet + a reachable server (the workflow SSHs over Tailscale)
 
 ## Local Development
 ```bash
@@ -85,6 +94,10 @@ bash scripts/vault-dev-init.sh
 # Vault:    http://localhost:8200
 # MongoDB:  localhost:27017
 ```
+
+Notes:
+- Local dev Compose uses Vault **dev mode** with a static root token (`dev-root-token`) and intentionally does **not** persist Vault state.
+- Most environment variables for local dev are already set inside `docker-compose.dev.yaml`.
 
 ## Build Production Images Locally
 ```bash
@@ -126,15 +139,31 @@ git push origin main --tags
 | `SERVER_FINGERPRINT` | SSH host fingerprint of the server |
 | `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (for GitHub Actions to join tailnet) |
 | `TS_OAUTH_SECRET` | Tailscale OAuth secret |
+| `MONGO_ROOT_USER` | MongoDB root username |
+| `MONGO_ROOT_PASSWORD` | MongoDB root password |
+| `MONGO_APP_PASSWORD` | MongoDB app user password (used by the API) |
+| `CORS_ORIGIN` | Allowed browser origins (comma-separated) |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID (API token verification) |
+| `REACT_APP_GOOGLE_CLIENT_ID` | Google OAuth client ID for the React build |
+| `BLIND_INDEX_PEPPER` | Pepper for deterministic blind indexes (PII search) |
+| `VAULT_ROLE_ID` | Vault AppRole role_id (API auth) |
+| `VAULT_SECRET_ID` | Vault AppRole secret_id (API auth) |
+| `GRAFANA_ADMIN_USER` | Grafana admin username |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana admin password |
+| `SONAR_TOKEN` | (Optional) SonarQube token (scan step uses `continue-on-error`) |
+| `VAULT_AWS_REGION` | AWS region for Vault auto-unseal (KMS) |
+| `VAULT_AWS_KMS_KEY_ID` | AWS KMS key id for Vault auto-unseal |
+| `VAULT_AWS_ACCESS_KEY_ID` | AWS access key for Vault KMS seal |
+| `VAULT_AWS_SECRET_KEY` | AWS secret key for Vault KMS seal |
 
 ## CI/CD Pipeline
 On manual trigger (workflow_dispatch):
 1. **Build** — multi-platform Docker images (amd64 + arm64)
-2. **Tag** — SHA tag + semver tags + latest
+2. **Tag** — SHA tag + optional semver tags + latest
 3. **Push** — to Docker Hub (`elorm116/myjs-app`, `elorm116/myreact-app`)
 4. **Connect** — join Tailscale network via OAuth
-5. **Deploy** — SSH into server, pull images, pin to digest, docker compose up
-6. **Rollback** — automatic rollback if deploy fails
+5. **Scan** — SonarQube scan step (non-blocking)
+6. **Deploy** — SSH into server, pull images, pin to digest, generate a server-side `docker-compose.prod.yaml`, and bring services up
 
 ## Planned: Deploy to Kubernetes
 
@@ -205,7 +234,7 @@ kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/st
 - Semantic versioning with automated tag strategy
 - Health-based startup ordering (Docker Compose `depends_on` + `healthcheck`)
 - Immutable deployments via digest pinning
-- Automatic rollback on failed deployments
+- Rollback by redeploying a previous SHA/tag
 - Environment-driven configuration (no hardcoded secrets)
 - Infrastructure as Code with Terraform
 - Tailscale mesh networking for secure server access
